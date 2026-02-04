@@ -43,13 +43,14 @@ class LLMClient:
         new_client.history = self.history.copy()
         return new_client
 
-    def call(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    def call(self, prompt: str, system_prompt: Optional[str] = None, schema: Any = None) -> str:
         """
         Call LLM and automatically add query/response to history.
 
         Args:
             prompt: User prompt text
             system_prompt: Optional system prompt (used only for first call)
+            schema: Optional JSON schema or Pydantic model for structured output
 
         Returns:
             Response text from LLM
@@ -62,6 +63,7 @@ class LLMClient:
 
         response = generate_with_schema(
             messages,
+            schema=schema,
             model=self.model,
             include_thoughts=self.think,
             temperature=self.temperature,
