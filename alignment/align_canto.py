@@ -16,7 +16,6 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dante_norton import Canto, LLMClient
-from llm7shi import create_json_descriptions_prompt
 
 
 # Structured output schemas
@@ -28,10 +27,8 @@ class ExtractionResult(BaseModel):
 
 
 class ValidationResult(BaseModel):
-    """LLM validation result for modern English to Norton English correspondence."""
-    answer: Literal["YES", "NO"] = Field(
-        description="YES if Norton English corresponds exactly to modern English (no more, no less), NO otherwise"
-    )
+    """LLM validation result."""
+    answer: Literal["YES", "NO"]
 
 
 # Global log file handle
@@ -119,26 +116,34 @@ def is_block_complete(norton_text: str, matched_words: List[str]) -> bool:
 
 
 def query_word_correspondences(llm: LLMClient, italian_block: List[ItalianLine],
-                               norton_text: str) -> Tuple[str, List[str]] | None:
+                               norton_text: str, skip_translation: bool = False) -> Tuple[str, List[str]] | None:
     """
     Query LLM to extract English text corresponding to Italian block.
     Uses two-stage approach: translate Italian first, then match in Norton text.
 
+    Args:
+        skip_translation: If True, use Italian text directly as reference instead of translating
+
     Returns:
-        List of English words that correspond to the Italian block
+        Tuple of (extracted text, word list) or None if extraction failed
     """
     italian_text = '\n'.join(line.full_text for line in italian_block)
     num_italian_lines = len(italian_block)
 
-    # Stage 1: Translate Italian to modern English
-    # For single lines, translate just that line
-    # For multiple lines (enjambment), translate all lines together
-    if num_italian_lines == 1:
-        text_to_translate = italian_block[0].full_text
+    if skip_translation:
+        # Use Italian text directly as reference
+        reference_text = italian_text
+        log_print(f"    Using Italian directly: {reference_text}")
     else:
-        text_to_translate = italian_text
+        # Stage 1: Translate Italian to modern English
+        # For single lines, translate just that line
+        # For multiple lines (enjambment), translate all lines together
+        if num_italian_lines == 1:
+            text_to_translate = italian_block[0].full_text
+        else:
+            text_to_translate = italian_text
 
-    translate_prompt = f"""Translate the following Italian text to simple, modern English.
+        translate_prompt = f"""Translate the following Italian text to simple, modern English.
 Maintain the exact meaning but use clear, straightforward language.
 
 Italian:
@@ -146,10 +151,10 @@ Italian:
 
 Output only the translation, nothing else."""
 
-    llm.history = []
-    translation_response = llm.call(translate_prompt)
-    modern_translation = translation_response.strip()
-    log_print(f"    Modern translation: {modern_translation}")
+        llm.history = []
+        translation_response = llm.call(translate_prompt)
+        reference_text = translation_response.strip()
+        log_print(f"    Modern translation: {reference_text}")
 
     # Stage 2: Find matching text in Norton English
     length_hint = "SHORT (likely one phrase or clause)" if num_italian_lines == 1 else f"matching {num_italian_lines} Italian lines"
@@ -157,7 +162,7 @@ Output only the translation, nothing else."""
     extract_prompt = f"""Task: Extract the corresponding text from the Norton English translation.
 
 Reference meaning (modern English):
-{modern_translation}
+{reference_text}
 
 Source text (Norton's literary translation - extract FROM this text):
 {norton_text[:500]}
@@ -192,7 +197,7 @@ Output only the extracted Norton English text:"""
         else:
             if last_validation == "NO":
                 retry_prompt = f"""Modern English translation:
-{modern_translation}
+{reference_text}
 
 Norton English text (literary translation):
 {norton_text[:500]}
@@ -229,13 +234,10 @@ Output only the extracted Norton English text:"""
                     extracted = extracted + next_char
 
         # Step 2: Validate extraction
-        llm.history = []  # Clear history for validation
-
-        # Create field descriptions for Ollama
-        json_descriptions = create_json_descriptions_prompt(ValidationResult)
+        llm.history = []
 
         validation_prompt = f"""Modern English (meaning reference):
-{modern_translation}
+{reference_text}
 
 Extracted Norton English:
 {extracted}
@@ -257,9 +259,7 @@ Answer YES if:
 
 Answer NO if:
 - The extraction clearly includes content from OTHER parts of the text
-- The extraction is MUCH LONGER than the reference suggests
-
-{json_descriptions}"""
+- The extraction is MUCH LONGER than the reference suggests"""
 
         validation_response = llm.call(
             validation_prompt,
@@ -334,7 +334,8 @@ def consume_matched_text(text: str, matched_words: List[str]) -> str:
 
 
 def align_paragraph(llm: LLMClient, italian_lines: List[ItalianLine],
-                    norton_paragraph: str, start_idx: int) -> Tuple[AlignmentBlock, int, str]:
+                    norton_paragraph: str, start_idx: int,
+                    skip_translation: bool = False) -> Tuple[AlignmentBlock, int, str]:
     """
     Align Italian lines to a Norton paragraph, finding the block boundary.
 
@@ -343,6 +344,7 @@ def align_paragraph(llm: LLMClient, italian_lines: List[ItalianLine],
         italian_lines: Full list of Italian lines
         norton_paragraph: Norton English paragraph text
         start_idx: Starting index in italian_lines
+        skip_translation: If True, use Italian directly instead of translating to English
 
     Returns:
         Tuple of (AlignmentBlock, next_start_idx, remaining_paragraph_text)
@@ -358,7 +360,7 @@ def align_paragraph(llm: LLMClient, italian_lines: List[ItalianLine],
         log_print(f"  Line {italian_block[-1].line_num}: {italian_block[-1].full_text}")
 
         # Query LLM for word correspondences
-        result = query_word_correspondences(llm, italian_block, norton_paragraph)
+        result = query_word_correspondences(llm, italian_block, norton_paragraph, skip_translation)
 
         # If extraction failed, try with more lines (enjambment case)
         if result is None:
@@ -387,7 +389,8 @@ def align_paragraph(llm: LLMClient, italian_lines: List[ItalianLine],
 
 
 def align_canto(llm: LLMClient, italian_filepath: str, norton_filepath: str,
-                max_lines: int | None = None, log_file = None) -> List[AlignmentBlock]:
+                max_lines: int | None = None, log_file = None,
+                skip_translation: bool = False) -> List[AlignmentBlock]:
     """
     Align a full canto (Italian and Norton translation).
 
@@ -396,6 +399,7 @@ def align_canto(llm: LLMClient, italian_filepath: str, norton_filepath: str,
         italian_filepath: Path to tokenize/inferno/*.txt file
         norton_filepath: Path to en-norton/inferno/*.txt file
         max_lines: Maximum number of Italian lines to process (for testing)
+        skip_translation: If True, use Italian directly instead of translating
 
     Returns:
         List of AlignmentBlocks
@@ -438,7 +442,7 @@ def align_canto(llm: LLMClient, italian_filepath: str, norton_filepath: str,
         while remaining_text.strip() and italian_idx < len(italian_lines):
             # Align this block
             block, italian_idx, remaining_text = align_paragraph(
-                llm, italian_lines, remaining_text, italian_idx
+                llm, italian_lines, remaining_text, italian_idx, skip_translation
             )
             blocks.append(block)
             block_num += 1
@@ -498,6 +502,7 @@ def main():
     parser.add_argument('--max-lines', type=int, default=20, help='Max Italian lines to process (default: 20)')
     parser.add_argument('--temperature', type=float, default=0.3, help='LLM temperature (default: 0.3)')
     parser.add_argument('--think', action='store_true', help='Enable LLM thinking (disabled by default)')
+    parser.add_argument('--translate', action='store_true', help='Translate Italian to English before matching (default: use Italian directly)')
 
     args = parser.parse_args()
 
@@ -514,14 +519,14 @@ def main():
         _log_file = log_f
 
         log_print(f"=== Canto {args.canto_num} Alignment ===")
-        log_print(f"Model: {args.model}, Temperature: {args.temperature}, Think: {args.think}")
+        log_print(f"Model: {args.model}, Temperature: {args.temperature}, Think: {args.think}, Translate: {args.translate}")
         log_print()
 
         # Create LLM client
         llm = LLMClient(model=args.model, think=args.think, temperature=args.temperature)
 
         # Align the canto
-        blocks = align_canto(llm, italian_file, norton_file, max_lines=args.max_lines)
+        blocks = align_canto(llm, italian_file, norton_file, max_lines=args.max_lines, skip_translation=not args.translate)
 
         # Write results to log
         log_print()
