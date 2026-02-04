@@ -409,9 +409,10 @@ Block 2 (2 lines):
    - Successfully handles cases like Lines 4-5 where Italian poetry uses enjambment
    - Block expands until meaningful extraction succeeds
 
-5. **Quote Stripping:**
-   - Removes leading/trailing quotation marks from LLM output
-   - Ensures clean text matching against Norton source
+5. **Quote Stripping (Symmetric):**
+   - Removes quotes ONLY when text is fully enclosed in matching quotes (e.g., `"text"` or `'text'`)
+   - Preserves internal quotes and apostrophes (e.g., `don't`, `it's`, `Ah!`)
+   - Uses plain text extraction (structured output caused over-extraction issues)
 
 ### Test Results (Lines 1-9)
 
@@ -421,27 +422,27 @@ Block 2 (2 lines):
 Block 1 (1 line): Nel mezzo del cammin di nostra vita
                   → Midway upon the road of our life
 
-Block 2 (1 line): mi ritrovai per una selva oscura
-                  → I found myself within a dark wood
+Block 2 (1 line): mi ritrovai per una selva oscura,
+                  → I found myself within a dark wood,
 
-Block 3 (1 line): ché la diritta via era smarrita
-                  → for the right way had been missed
+Block 3 (1 line): ché la diritta via era smarrita.
+                  → for the right way had been missed.
 
 Block 4 (2 lines): Ahi quanto a dir qual era è cosa dura / esta selva selvaggia e aspra e forte
-                   → Ah! how hard a thing it is to tell what this wild and rough and dense wood was
+                   → Ah! how hard a thing it is to tell what this wild and rough and dense wood was,
                    [Enjambment detected: 2 Italian lines → 1 English sentence]
 
-Block 5 (1 line): che nel pensier rinova la paura
-                  → which in thought renews the fear
+Block 5 (1 line): che nel pensier rinova la paura!
+                  → which in thought renews the fear!
 
-Block 6 (1 line): Tant' è amara che poco è più morte
-                  → So bitter is it that death is little more
+Block 6 (1 line): Tant' è amara che poco è più morte;
+                  → So bitter is it that death is little more.
 
-Block 7 (1 line): ma per trattar del ben ch'i' vi trovai
-                  → But in order to treat of the good that there I found
+Block 7 (1 line): ma per trattar del ben ch'i' vi trovai,
+                  → But in order to treat of the good that there I found,
 
-Block 8 (1 line): dirò de l'altre cose ch'i' v'ho scorte
-                  → I will tell of the other things that I have seen there
+Block 8 (1 line): dirò de l'altre cose ch'i' v'ho scorte.
+                  → I will tell of the other things that I have seen there.
 ```
 
 **Key Success:**
@@ -453,10 +454,11 @@ Block 8 (1 line): dirò de l'altre cose ch'i' v'ho scorte
 
 **Working:**
 - ✓ Two-stage approach (modern translation → Norton extraction)
+- ✓ Plain text extraction with symmetric quote stripping
+- ✓ Punctuation restoration from original Norton text
 - ✓ Semantic matching handles literary translation differences
 - ✓ Automatic enjambment detection via retry mechanism
 - ✓ Structured validation with length ratio guards
-- ✓ Clean extraction without quotation mark artifacts
 
 **Next Steps:**
 1. Test with full canto (136 lines)

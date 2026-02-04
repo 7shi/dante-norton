@@ -209,8 +209,12 @@ Output only the extracted Norton English text:"""
             else:
                 response = llm.call(extract_prompt)
 
-        # Use response directly as extracted text, stripping any quotes
-        extracted = response.strip().strip('"').strip("'")
+        # Use response directly as extracted text
+        # Strip quotes only if text is fully enclosed in matching quotes
+        extracted = response.strip()
+        if (extracted.startswith('"') and extracted.endswith('"')) or \
+           (extracted.startswith("'") and extracted.endswith("'")):
+            extracted = extracted[1:-1]
 
         # Restore punctuation from original Norton text if missing
         # Find the position of extracted text in norton_text
