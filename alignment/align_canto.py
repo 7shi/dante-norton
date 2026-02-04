@@ -115,7 +115,7 @@ def is_block_complete(norton_text: str, matched_words: List[str]) -> bool:
 
 
 def query_word_correspondences(llm: LLMClient, italian_block: List[ItalianLine],
-                               norton_text: str) -> List[str] | None:
+                               norton_text: str) -> Tuple[str, List[str]] | None:
     """
     Query LLM to extract English text corresponding to Italian block.
     Uses two-stage approach: translate Italian first, then match in Norton text.
@@ -205,6 +205,18 @@ IMPORTANT: Do NOT add quotation marks around the output. Output the raw text onl
         # Use response directly as extracted text
         extracted = response.strip().strip('"').strip("'")
 
+        # Restore punctuation from original Norton text if missing
+        # Find the position of extracted text in norton_text
+        idx = norton_text.lower().find(extracted.lower())
+        if idx != -1:
+            end_pos = idx + len(extracted)
+            # Check if there's punctuation immediately after in the original
+            if end_pos < len(norton_text):
+                next_char = norton_text[end_pos]
+                if next_char in ',.;:!?' and not extracted.endswith(next_char):
+                    # Add the punctuation if missing
+                    extracted = extracted + next_char
+
         # Step 2: Validate extraction
         llm.history = []  # Clear history for validation
 
@@ -287,7 +299,7 @@ Answer NO if:
 
     # Check if we succeeded
     if english_text:
-        return english_text.split()
+        return (english_text, english_text.split())
     else:
         # Failed after 3 attempts - return None to signal caller to try with more lines
         log_print(f"    ✗ Failed after 3 attempts - need more context")
@@ -336,34 +348,24 @@ def align_paragraph(llm: LLMClient, italian_lines: List[ItalianLine],
         log_print(f"  Line {italian_block[-1].line_num}: {italian_block[-1].full_text}")
 
         # Query LLM for word correspondences
-        matched_words = query_word_correspondences(llm, italian_block, norton_paragraph)
+        result = query_word_correspondences(llm, italian_block, norton_paragraph)
 
         # If extraction failed, try with more lines (enjambment case)
-        if matched_words is None:
+        if result is None:
             log_print(f"    → Failed with {len(italian_block)} line(s), trying with more context")
             continue
 
+        extracted_text, matched_words = result
         log_print(f"    → {matched_words}")
 
         # Check if block is complete
         if is_block_complete(norton_paragraph, matched_words):
-            # Calculate matched text
-            temp_text = norton_paragraph
-            consumed_length = 0
-
-            for word in matched_words:
-                temp_text = temp_text.lstrip(" ,;.!?")
-                if temp_text.startswith(word):
-                    consumed_length = len(norton_paragraph) - len(temp_text) + len(word)
-                    temp_text = temp_text[len(word):]
-                else:
-                    break
-
-            matched_text = norton_paragraph[:consumed_length].rstrip(" ,;.!?")
+            # Use the extracted text directly (preserves punctuation)
+            matched_text = extracted_text
             log_print(f"    ✓ Complete: {matched_text}")
 
             block = AlignmentBlock(italian_block, norton_paragraph, matched_text)
-            remaining_text = consume_matched_text(norton_paragraph, matched_words)
+            remaining_text = norton_paragraph[len(matched_text):].lstrip(" ,;.!?")
 
             return block, idx, remaining_text
 
