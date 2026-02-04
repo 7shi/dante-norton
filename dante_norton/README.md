@@ -2,6 +2,49 @@
 
 ## Classes
 
+### `LLMClient`
+
+Client for interacting with language models via llm7shi.
+
+Manages conversation history and provides methods for making LLM calls with automatic history tracking.
+
+#### Methods
+
+##### `__init__(model: str, think: bool, temperature: float = 1.0)`
+
+Initialize the LLM client.
+
+**Parameters:**
+- `model` (str): Model identifier to use
+- `think` (bool): Whether to include thinking in responses
+- `temperature` (float): Sampling temperature (default: 1.0)
+
+##### `call(prompt: str, system_prompt: Optional[str] = None) -> str`
+
+Call LLM and automatically add query/response to history.
+
+**Parameters:**
+- `prompt` (str): User prompt text
+- `system_prompt` (Optional[str]): Optional system prompt (used only for first call)
+
+**Returns:**
+- str: Response text from LLM
+
+##### `copy() -> LLMClient`
+
+Create a copy of the LLMClient with the same model, think setting, and history.
+
+**Returns:**
+- LLMClient: New LLMClient instance with copied history
+
+#### Attributes
+
+##### `history: List[Dict[str, str]]`
+
+Conversation history as a list of message dictionaries, each containing:
+- `role` (str): Message role ('system', 'user', or 'assistant')
+- `content` (str): Message content
+
 ### `Canto`
 
 Parser for a canto (section) of Dante's Divine Comedy.
@@ -52,6 +95,26 @@ Parsed lines as a list of tuples containing:
 
 ## Functions
 
+### `history_to_xml(history: List[Dict[str, str]]) -> str`
+
+Convert LLM interaction history to XML format.
+
+**Parameters:**
+- `history` (List[Dict[str, str]]): List of message dictionaries with 'role' and 'content'
+
+**Returns:**
+- str: XML string representing the history
+
+### `xml_to_history(xml_string: str) -> List[Dict[str, str]]`
+
+Convert XML format back to LLM interaction history.
+
+**Parameters:**
+- `xml_string` (str): XML string representing the history
+
+**Returns:**
+- List[Dict[str, str]]: List of message dictionaries with 'role' and 'content'
+
 ### `roman_number(r: str) -> int`
 
 Parse roman number (1-39).
@@ -66,6 +129,8 @@ Parse roman number (1-39).
 - `ValueError`: If the input is not a valid roman numeral
 
 ## Example Usage
+
+### Working with Cantos
 
 ```python
 from dante_norton import Canto, roman_number
@@ -86,4 +151,41 @@ full_clean = canto.get_full_text_without_annotations()
 
 # Convert roman numerals
 num = roman_number("XXXIV")  # 34
+```
+
+### Working with LLMs
+
+```python
+from dante_norton import LLMClient, history_to_xml, xml_to_history
+
+# Create an LLM client
+client = LLMClient(
+    model="ollama:gpt-oss:120b",
+    think=True,
+    temperature=1.0
+)
+
+# Make LLM calls with automatic history tracking
+response = client.call(
+    "Translate this to Italian: Hello, world!",
+    system_prompt="You are a translation assistant."
+)
+print(response)
+
+# Continue conversation
+response2 = client.call("Now translate it to French")
+
+# Save conversation history to XML
+xml = history_to_xml(client.history)
+with open('conversation.xml', 'w') as f:
+    f.write(xml)
+
+# Load conversation history from XML
+with open('conversation.xml', 'r') as f:
+    xml_data = f.read()
+history = xml_to_history(xml_data)
+
+# Create a new client with loaded history
+new_client = LLMClient(model="ollama:gpt-oss:120b", think=True)
+new_client.history = history
 ```
