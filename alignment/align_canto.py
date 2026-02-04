@@ -499,7 +499,7 @@ def main():
     parser = argparse.ArgumentParser(description='Align Italian and Norton English translation')
     parser.add_argument('canto_num', type=int, help='Canto number (e.g., 1 for Canto I)')
     parser.add_argument('--model', default='ollama:ministral-3:14b', help='LLM model to use (default: ollama:ministral-3:14b)')
-    parser.add_argument('--max-lines', type=int, default=20, help='Max Italian lines to process (default: 20)')
+    parser.add_argument('--max-lines', type=int, default=None, help='Max Italian lines to process (default: 20)')
     parser.add_argument('--temperature', type=float, default=0.3, help='LLM temperature (default: 0.3)')
     parser.add_argument('--think', action='store_true', help='Enable LLM thinking (disabled by default)')
     parser.add_argument('--translate', action='store_true', help='Translate Italian to English before matching (default: use Italian directly)')
