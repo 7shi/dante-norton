@@ -19,7 +19,14 @@ from dante_norton import Canto, LLMClient
 from llm7shi import create_json_descriptions_prompt
 
 
-# Structured output schema for validation only
+# Structured output schemas
+class ExtractionResult(BaseModel):
+    """LLM extraction result for Norton English text."""
+    extracted_text: str = Field(
+        description="The extracted Norton English text, without any quotation marks or formatting"
+    )
+
+
 class ValidationResult(BaseModel):
     """LLM validation result for Italian-English correspondence."""
     reason: str = Field(
@@ -150,6 +157,9 @@ Output only the translation, nothing else."""
     # Stage 2: Find matching text in Norton English
     length_hint = "SHORT (likely one phrase or clause)" if num_italian_lines == 1 else f"matching {num_italian_lines} Italian lines"
 
+    # Create field descriptions for extraction
+    json_descriptions_extract = create_json_descriptions_prompt(ExtractionResult)
+
     extract_prompt = f"""Task: Extract the corresponding text from the Norton English translation.
 
 Reference meaning (modern English):
@@ -166,21 +176,26 @@ INSTRUCTIONS:
 5. Start from the very beginning of the Norton text
 6. Extract approximately: {length_hint}
 
+LENGTH CONSTRAINT:
+- The modern translation above represents ONE line of Italian
+- Extract ONLY a SHORT phrase or clause from the Norton text
+- Do NOT extract multiple sentences
+- When in doubt, extract LESS rather than more
+
 CRITICAL: Output must be the ACTUAL TEXT from the Norton passage above, not a rephrasing.
 
-Output only the extracted Norton English text:"""
+{json_descriptions_extract}"""
 
     # Try up to 3 times with validation
     english_text = None
     last_validation = None
 
     for retry in range(3):
-        # Step 1: Extract English text (plain text output)
+        # Step 1: Extract English text (structured output)
+        llm.history = []
         if retry == 0:
-            response = llm.call(extract_prompt)
+            response = llm.call(extract_prompt, schema=ExtractionResult)
         else:
-            # Retry with emphasis on exactness
-            llm.history = []
             if last_validation == "NO":
                 retry_prompt = f"""Modern English translation:
 {modern_translation}
@@ -195,15 +210,14 @@ Find the portion of the Norton text that matches the modern translation above.
 - Do NOT include content from other parts of the Norton text
 - The Italian has {num_italian_lines} line(s), so extract a {length_hint} amount
 
-Output only the extracted Norton English text, nothing else.
-
-IMPORTANT: Do NOT add quotation marks around the output. Output the raw text only."""
-                response = llm.call(retry_prompt)
+{json_descriptions_extract}"""
+                response = llm.call(retry_prompt, schema=ExtractionResult)
             else:
-                response = llm.call(extract_prompt)
+                response = llm.call(extract_prompt, schema=ExtractionResult)
 
-        # Use response directly as extracted text
-        extracted = response.strip().strip('"').strip("'")
+        # Parse structured extraction response
+        extraction_data = json.loads(response)
+        extracted = extraction_data["extracted_text"].strip()
 
         # Restore punctuation from original Norton text if missing
         # Find the position of extracted text in norton_text
