@@ -1,263 +1,171 @@
 # Implementation Plan
 
-This document contains the implementation plan for the Dante Norton project, based on analysis of prior work and iterative discussion.
+Based on analysis of [prior work](PRIOR_WORK.md) and manual simulation.
 
-## Background
+## Core Approach
 
-See [PRIOR_WORK.md](PRIOR_WORK.md) for detailed analysis of previous attempts (Bard, Claude, Copilot) to create line-based versions of Norton's translation.
+### Variable-Length Blocks
 
-## Evolution of Approach
+**Key Insight:** Italian and English word order differs. Insert line breaks only at block boundaries where word order allows natural alignment.
 
-### Prior Work: Fixed Tercet Blocks
+**Example (lines 41-43):**
+- Italian order: 41→42→43 (hope/me, beast, hour/season)
+- Norton order: 43→41→42 (hour/season, hope/me, beast)
+- **Solution:** Treat as single 3-line block
 
-Previous attempts (especially Bard) used a fixed approach:
-- Process exactly 3 lines (one tercet) at a time
-- Split Norton's prose to match each tercet
-- Sometimes resulted in unnatural breaks
+### Data Sources
 
-### New Approach: Variable-Length Blocks
+1. `tokenize/inferno/01.txt` - Italian with tokens: `line|token1|token2|...`
+2. `en-norton/inferno/01.txt` - Norton prose (parsed via `dante_norton.Canto`)
 
-**Key Insight:** Not all tercets map cleanly to English prose segments. Sometimes word order differences require multiple Italian lines to be treated as a single block.
+## Algorithm
 
-**Example of word order inversion (lines 41-43):**
+### Processing Flow
 
-Italian order (lines 41→42→43):
-```
-41 sì ch'a bene sperar m'era cagione     (were occasion of good hope to me)
-42 di quella fiera a la gaetta pelle      (concerning that wild beast)
-43 l'ora del tempo e la dolce stagione    (the hour and the sweet season)
-```
-
-Norton's order (43→41→42):
-```
-so that the hour of the time and the sweet season
-were occasion of good hope to me
-concerning that wild beast with the dappled skin.
-```
-
-**Solution:** Treat lines 41-43 as a single block. Insert line breaks only at block boundaries, not within blocks where word order differs.
-
-## Implementation Strategy
-
-### Core Principle: "Line Breaks Only" Alignment
-
-**Goal:** Divide Norton's prose into blocks that correspond to variable-length groups of Italian lines, inserting line breaks at block boundaries only. No word reordering within blocks.
-
-**Why Variable Length:**
-- Some Italian lines map directly to prose segments (1 line = 1 block)
-- Other groups of lines have internal word order differences and must stay together (N lines = 1 block)
-- Block size determined by word order correspondence, not fixed tercet structure
-
-### Algorithm Overview
-
-**Input Data:**
-1. `tokenize/inferno/01.txt` - Italian lines with tokenized words (pipe-separated)
-   - Format: `original line|token1|token2|token3|...`
-   - No need to read `it/inferno/01.txt` separately
-2. `en-norton/inferno/01.txt` - Norton prose, parsed with `dante_norton.Canto`
-   - Separates text from annotations
-   - Provides sections (paragraphs)
-
-**Key Assumption (to verify experimentally):**
-- Word order inversions occur within Norton paragraphs, not across them
-- Therefore, process one Norton paragraph at a time for efficiency
-
-**Processing Flow:**
 ```
 For each Norton paragraph:
-    Italian_block = []
+    italian_block = []
 
-    For each Italian line (until paragraph exhausted):
-        Add line to Italian_block
+    For each Italian line:
+        Add line to italian_block
+        Query LLM for word correspondences
 
-        For each token in current line:
-            Query LLM: "What English word corresponds to this Italian token?"
-            Collect English word
-
-        At line end:
-            Perform matching check (see below)
-
-            If match succeeds:
-                Output Italian_block with corresponding Norton text
-                Start new block
-            Else:
-                Continue to next Italian line (expand block)
+        Check if block complete:
+            - Replace matched words with "#" in Norton text
+            - If prefix (start to last #) has no letters → complete
+            - Else → continue to next line
 ```
 
-## Technical Approach
-
-### Detailed Matching Algorithm
-
-**Objective:** Determine if Italian lines processed so far have been fully matched from the start of the current Norton paragraph.
-
-**Method: Sequential Word Replacement with "#" Markers**
+### Matching Check (Core Logic)
 
 ```python
-# Given:
-italian_current_lines = ["Nel mezzo del cammin di nostra vita", ...]
-norton_current_paragraph = "Midway upon the road of our life I found..."
-matched_words = ["Midway", "upon", "the", "road", "of", "our", "life"]  # from LLM
-
-# Step 1: Create a test copy of Norton text
-test_text = norton_current_paragraph
-
-# Step 2: Replace each matched word with "#" characters (same length)
-#         Use replace(word, replacement, 1) to replace only first occurrence
+# Step 1: Replace matched words with "#"
+test_text = norton_paragraph
 for word in matched_words:
     test_text = test_text.replace(word, "#" * len(word), 1)
 
-# Example result:
-# Original: "Midway upon the road of our life I found myself..."
-# After:    "####### #### ### #### ## ### #### I found myself..."
+# Step 2: Check prefix
+last_hash = test_text.rfind("#")
+prefix = test_text[:last_hash + 1]
 
-# Step 3: Find the last "#" position
-last_hash_index = test_text.rfind("#")
-if last_hash_index == -1:
-    # No matches found - error condition
-    continue
-
-# Step 4: Extract prefix (from start to last "#")
-prefix = test_text[:last_hash_index + 1]
-
-# Step 5: Check if prefix contains any alphabetic characters
-import re
+# Step 3: Block complete if no alphabetic chars in prefix
 if not re.search(r'[a-zA-Z]', prefix):
-    # SUCCESS: All words from start have been matched
-    # Block is complete, insert line break
-    output_block(italian_current_lines, norton_matched_portion)
-    start_new_block()
+    # Block complete - insert line break
 else:
-    # CONTINUE: Alphabetic characters remain in prefix
-    # This means gaps in matching (words not yet seen)
-    # Add next Italian line to block and continue
-    continue_block()
+    # Continue - add next Italian line
 ```
 
-### Visual Example: Successful Match
+## Manual Simulation Results
+
+### Test: Line 1
+
+**Italian:** `Nel mezzo del cammin di nostra vita`
+
+**Norton:** `Midway upon the road of our life I found myself within a dark wood...`
+
+**Critical Discovery - Multi-word mappings:**
+- `Nel mezzo` (2 tokens) → `Midway` (1 word)
+- `del` (1 token) → `upon the` (2 words) - Norton's interpretation, not literal "of the"
+
+### Gap Detection Problem
+
+With incorrect literal matching, we get "islands":
 
 ```
-Italian line 1: "Nel mezzo del cammin di nostra vita"
-Tokens: Nel, mezzo, del, cammin, di, nostra, vita
-Matched: Midway, upon, the, road, of, our, life
-
-Norton original: "Midway upon the road of our life I found myself..."
-After replace:   "####### #### ### #### ## ### #### I found myself..."
-Prefix:          "####### #### ### #### ## ### #### "
-Has alphabet?    NO
-Result:          ✓ Block complete - insert line break here
+"####### #### ### #### ## ### #### I found myself ###### a dark wood..."
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^    ^^^^^^^^^^^^^^ ^^^^^^
+ Matched at start                  Gap            Island (error!)
 ```
 
-### Visual Example: Block Continuation (Lines 41-43)
+**Gap = error signal.** Matched words should be continuous from the start.
 
-```
-After line 41:
-Norton original: "so that the hour of the time and the sweet season were occasion of good hope to me..."
-Matched 41:      ["occasion", "good", "hope", "me"]
-After replace:   "so that the hour of the time and the sweet season were ######## of #### #### to ##..."
-Prefix:          "so that the hour of the time and the sweet season were ######## of #### #### to "
-Has alphabet?    YES ("so that", "the hour", etc. remain)
-Result:          ✗ Continue - add line 42
-
-After line 42:
-Matched 41+42:   ["occasion", "good", "hope", "me", "wild", "beast", "dappled", "skin"]
-After replace:   "so that the hour of the time and the sweet season were ######## of #### #### to ## concerning that #### ##### with the ####### ####..."
-Has alphabet?    YES ("so that the hour..." remain)
-Result:          ✗ Continue - add line 43
-
-After line 43:
-Matched 41+42+43: ["occasion", "good", "hope", "me", "wild", "beast", "dappled", "skin", "hour", "time", "sweet", "season"]
-After replace:   "so that the #### of the #### and the ##### ###### were ######## of #### #### to ## concerning that #### ##### with the ####### ####..."
-Prefix:          "## #### ### #### ## ### #### ### ### ##### ###### #### ######## ## #### #### ## ## ########## #### #### ##### #### ### ####### ####"
-Has alphabet?    NO
-Result:          ✓ Block complete - lines 41-43 form one block
+**Gap detection function:**
+```python
+def has_gap(text):
+    # Find first alphabetic character
+    first_alpha = next((i for i, c in enumerate(text) if c.isalpha()), None)
+    if first_alpha is None:
+        return False
+    # Check if "#" appears after it (= island)
+    return '#' in text[first_alpha:]
 ```
 
-## LLM Integration
+### With Correct Matching
 
-### Context Management
-
-**Per-token query to LLM:**
+Using correct correspondences (Nel mezzo→Midway, del→upon the):
 ```
-Prompt:
-Italian line(s): {current_italian_block}
-English translation: {current_norton_paragraph}
-
-What English word(s) in the translation correspond to the Italian token "{token}"?
-Return only the word(s), no explanation.
+Matched: ["Midway", "upon", "the", "road", "of", "our", "life"]
+Result:  "####### #### ### #### ## ### #### I found myself..."
+Prefix:  "####### #### ### #### ## ### ####"
+Alphabetic? NO
+✓ Block complete after line 1
 ```
 
-**Why only current paragraph:**
-- Keeps context lightweight
-- Prevents LLM errors from distant text
-- Assumption: word order inversions don't cross paragraph boundaries
+### Key Insight
 
-**LLM Choice:**
-- Local LLM (Ollama recommended)
-- Models to try: Llama 3.1/3.2, Qwen 2.5, Mistral
-- Start simple, optimize later based on results
+**Goal: Correct line breaks, not perfect word matching.**
 
-## Known Limitations & Future Adjustments
+Implications:
+- Imperfect word matching tolerable if block boundaries correct
+- Can fallback to block-level validation when word-level fails
 
-### 1:1 Word Correspondence Assumption
+## Implementation Strategy
 
-**Current simplification:**
-- Assume each Italian token maps to one English word
+### Hybrid Approach with Fallback
 
-**Known issues (to handle later):**
-- Articles: `del` → `of the` (1→2)
-- Contractions: `della` → `of the` (1→2)
-- Relative pronouns: `che` → `who/which/that` or omitted (1→1 or 1→0)
-- Apostrophes: `l'acqua` → `the water` (token structure differences)
+**Primary: Word-level matching**
+```
+For each token, ask LLM:
+"Italian: {block} / English: {paragraph}
+ What English word(s) correspond to '{token}'? (may be multiple words)"
+```
 
-**Approach:** Start with 1:1 assumption, observe failures, adjust algorithm based on real data patterns.
+**Fallback: Block-level validation**
 
-## Experimental Workflow
+If gap detected or word-level unreliable:
+```
+Ask LLM:
+"Italian lines: {lines}
+ English text: {paragraph}
+ Does English contain COMPLETE translation of Italian from paragraph start?
+ Answer: YES or NO"
+```
 
-### Phase 1: Proof of Concept
-1. Implement minimal script for Canto 1
-2. Process first ~20 Italian lines
-3. Observe:
-   - LLM accuracy in word matching
-   - Block boundary detection correctness
-   - Cases where algorithm fails
-4. Document findings
+**Strategy:**
+1. Try word-level matching
+2. Detect gaps → retry with multi-word prompt
+3. Still has gaps → fallback to block validation
+4. Log which method succeeded
 
-### Phase 2: Refinement
-Based on Phase 1 results:
-- Adjust prompt if LLM extraction is poor
-- Handle common multi-word mappings if needed
-- Verify assumption about paragraph boundaries
-- Decide whether to continue to full Canto 1
+### LLM Configuration
 
-### Phase 3: Scale (If Successful)
-- Process remaining cantos of Inferno
-- Consider Purgatorio and Paradiso
-- Build automation pipeline
+- Local LLM via Ollama (Llama 3.1/3.2, Qwen 2.5, Mistral)
+- Process one paragraph at a time (keep context light)
+- Assumption: Word order inversions don't cross paragraphs
 
 ## Success Criteria
 
-**Phase 1 Success:**
-- ✓ Algorithm correctly identifies block boundaries for majority of lines
-- ✓ Visual inspection confirms sensible line breaks
-- ✓ No catastrophic failures (infinite loops, crashes)
+**Phase 1 (20 lines):**
+- ✓ Block boundaries identified (either method)
+- ✓ Sensible line breaks on visual inspection
+- ✓ No crashes/infinite loops
 
-**Phase 1 Acceptable Issues:**
-- ○ Some word matches require manual correction
-- ○ Edge cases with articles/pronouns
-- ○ Need to adjust prompt or matching logic
+**Acceptable:**
+- Some blocks need fallback validation
+- Gaps detected frequently (improve prompts later)
 
-**Phase 1 Failure (requires rethink):**
-- ✗ LLM cannot reliably extract word correspondences
-- ✗ Block detection produces nonsensical results
-- ✗ Assumption about paragraph boundaries is wrong
+**Concerns requiring adjustment:**
+- Block validation also fails
+- Paragraph assumption breaks
 
 ## Next Steps
 
-1. Write minimal Python script implementing the algorithm
-2. Test on Canto 1, lines 1-20
-3. Review output and document observations
-4. Iterate or pivot based on results
+1. Implement with gap detection + fallback
+2. Test on lines 1-20
+3. Log success method per block
+4. Determine if word-level viable or use block-level as primary
+5. Iterate
 
 ---
 
-**Note:** This is an experimental, iterative approach. The plan will evolve based on actual implementation results.
+**Note:** Experimental approach. Plan evolves based on results.
