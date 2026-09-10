@@ -35,6 +35,9 @@ The algorithm supports two modes:
 
 ### Mode 2: Translation-Based (`--translate` flag)
 
+**Measured:** worse than direct comparison with every model tested (see
+[MEMO.md](MEMO.md)); kept as an experiment switch, not recommended.
+
 **Purpose:** Create a semantic reference point independent of Norton's literary style.
 
 **Process:**
@@ -90,6 +93,17 @@ def is_block_complete(norton_text, matched_words):
 - An "island" is matched text after unmatched text
 - Indicates word order differences between Italian and English
 - Block is complete when all text from start is matched continuously
+
+**Known issue (measured):** in practice `has_island` is always False. An
+accepted extraction is always a contiguous prefix of the remaining Norton
+text (position check below), so the `#` markers always form one contiguous
+region at the start, and no `#` can appear after the first unmatched
+character. `is_block_complete()` therefore returns True on every successful
+extraction — `Island: True` occurred 0 times across all 8 full-canto test
+runs. Block completion is decided by extraction acceptance alone;
+multi-line blocks arise from the failure-retry path, not from island
+detection. See [MEMO.md](MEMO.md) "Structural analysis" for details and
+redesign implications.
 
 ### Enjambment Handling
 
@@ -154,16 +168,19 @@ if end_pos < len(norton_text):
 
 This ensures output matches original formatting (e.g., "dark wood," not "dark wood").
 
-## Failure Recovery (Re-sync)
+## Failure Recovery
 
-If a paragraph's alignment accumulates more than 6 Italian lines (`MAX_BLOCK_LINES`) without a successful extraction, that paragraph is abandoned instead of looping indefinitely:
+If a block accumulates more than 6 Italian lines (`MAX_BLOCK_LINES`) without
+a successful extraction, those line(s) are skipped with no output
+("Block exceeded" in the log), and the paragraph's remaining text is
+preserved: alignment continues with the next Italian line(s) against the
+same paragraph. `italian_idx` therefore always advances to the canto's end,
+but lines consumed by skipped blocks produce no output — hence "coverage"
+(line-based completion) is tracked separately in [MEMO.md](MEMO.md).
 
-1. Stop accumulating lines for the current paragraph and mark it as skipped
-2. Peek at the next non-empty Norton paragraph
-3. Ask the LLM which of the next ~20 Italian lines corresponds to the start of that paragraph (`find_matching_italian_line`)
-4. Resume alignment from that Italian line
-
-This bounds the cost of a single bad match and prevents one failure from permanently desynchronizing the rest of the canto.
+Note: an earlier re-sync mechanism (`find_matching_italian_line`, which
+jumped to the next Norton paragraph and re-found the Italian position) was
+removed as unreachable — see "Bug history" in [MEMO.md](MEMO.md).
 
 ## Processing Flow
 
@@ -184,32 +201,36 @@ For each Norton paragraph:
             Retry (up to 3 attempts), then return None → try with more lines
 
         If block exceeds 6 lines with no success:
-            Skip paragraph, re-sync Italian index at next paragraph
+            Skip these line(s) (no output); retry next line(s)
+            against the same paragraph
 
-        Check block completion (island detection):
-            If complete → Finalize block
-            If islands → Continue to next Italian line
+        A successful extraction always finalizes the block
+        (island detection never fires in practice — see known issue above)
 ```
 
 ## Success Metrics
 
-From test on Inferno Canto 1, Lines 1-9 (using **direct comparison mode**, default):
-- **9 Italian lines → 8 blocks**
-- 6 individual lines mapped correctly
-- 1 enjambment case detected (Lines 4-5 merged)
-- 100% success rate on test set
+Full-canto results across models and modes are tracked in
+[MEMO.md](MEMO.md). Key findings from Inferno Canto 1 (136 lines):
 
-**Note:** Both modes (direct comparison and translation-based) are expected to produce similar results, though direct comparison is faster.
+- Direct comparison (default) outperforms `--translate` with every model
+  tested.
+- Coverage ranges from 19% (local 14B model) to 100% (top-tier models), but
+  even top-tier models need retries — the prefix-based task formulation is
+  the bottleneck (see MEMO.md "Structural analysis").
 
 ## Configuration
 
-- **LLM Model:** Ollama (ministral-3:14b)
+- **LLM Model:** Ollama (ministral-3:14b) by default
 - **Temperature:** 1.0
 - **Max Retries:** 3 per extraction attempt
 - **Length Ratio Threshold:** 2.0
-- **Max Block Lines:** 6 (paragraph is skipped and re-synced beyond this)
+- **Max Block Lines:** 6 (beyond this the block's line(s) are skipped with
+  no output; the paragraph text is preserved for the next line(s))
 - **Default Mode:** Direct comparison (Italian text used directly)
-- **Translation Mode:** Optional `--translate` flag for two-stage approach
+- **Translation Mode:** Optional `--translate` flag; measured worse than
+  direct comparison with all models tested (see MEMO.md), kept as an
+  experiment switch
 
 ## Limitations
 

@@ -40,12 +40,20 @@ uv run alignment/align_canto.py 1 --think
 
 # Translate Italian to modern English before matching, instead of
 # comparing the Italian text directly (default: direct comparison)
+# NOT recommended: benchmarked worse than direct comparison with
+# every model tested (see MEMO.md)
 uv run alignment/align_canto.py 1 --translate
 ```
 
 The `--model` value is passed through to `llm7shi`; use an `ollama:`, `google:`,
 or `openai:` prefix to select the backend. Cloud backends need the
 corresponding API key set in the environment (e.g. `GEMINI_API_KEY`).
+
+Note on `--translate`: it adds an LLM translation call per query, and on
+Inferno Canto 1 it reduced coverage for the weaker models (e.g. 47% → 19%
+for `ministral-3:14b`) while giving the stronger models no benefit. Kept as
+an experiment switch; use the default direct comparison. See
+[MEMO.md](MEMO.md) for the measured numbers.
 
 ## Output
 

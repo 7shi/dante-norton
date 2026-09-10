@@ -2,8 +2,8 @@
 
 Notes from testing `align_canto.py` against Inferno Canto 1 (136 Italian lines,
 6 Norton paragraphs after the summary paragraph is skipped) with different LLM
-backends, using the default direct-comparison mode (no `--translate`) and
-temperature 1.0.
+backends and temperature 1.0, in both the default direct-comparison mode and
+`--translate` mode.
 
 **These results are all from the current code**, which includes three fixes
 made during this work: tolerant JSON parsing (`parse_json_object`, handling
@@ -13,7 +13,7 @@ remaining text and jumping to the next one (`find_matching_italian_line` /
 resync-to-next-paragraph was removed as it's no longer reachable). See "Bug
 history" below for what each fix addressed and which model exposed it.
 
-## Results
+## Results: direct comparison (default)
 
 | Model | Coverage (lines in an output block) | Blocks | Failed after 3 attempts | Hallucination rejects | Empty-extraction rejects | Block exceeded (lines skipped) |
 |---|---|---|---|---|---|---|
@@ -28,7 +28,7 @@ partway through), but for the two weaker models many lines along the way
 produced no block at all ("Block exceeded" → skipped with no output). So
 coverage, not `italian_idx`, is the meaningful completion metric now.
 
-## Observations
+## Observations (direct comparison)
 
 - The `gpt-5.6` models fully cover the canto with very few rejects.
   `gpt-5.6-terra` (reportedly the higher tier of the two) has fewer retries
@@ -41,6 +41,108 @@ coverage, not `italian_idx`, is the meaningful completion metric now.
   coverage, with high rates of both hallucination (132) and empty
   extractions (91). It looks like a genuine capability gap for this task,
   not a remaining code issue.
+
+## Results: `--translate` mode
+
+Same runs with `--translate`: each query first asks the LLM to translate the
+Italian into simple modern English, then extracts the matching Norton text
+guided by that translation (the extraction prompt still includes the Italian
+line as well). This adds one LLM call per query. Same conditions otherwise
+(temperature 1.0, full canto).
+
+| Model | Coverage (lines in an output block) | Blocks | Failed after 3 attempts | Hallucination rejects | Empty-extraction rejects | Block exceeded (lines skipped) |
+|---|---|---|---|---|---|---|
+| `ollama:ministral-3:14b` | **26 / 136 (19%)** | 23 | 98 | 217 | 85 | 15 |
+| `google:gemma-4-31b-it` | **57 / 136 (42%)** | 48 | 77 | 34 | 153 | 11 |
+| `openai:gpt-5.6-luna` | **136 / 136 (100%)** | 126 | 10 | 9 | 4 | 0 |
+| `openai:gpt-5.6-terra` | **136 / 136 (100%)** | 131 | 5 | 8 | 2 | 0 |
+
+Metrics counted the same way as the direct-comparison table (log line
+pattern: "Failed after 3 attempts", "Hallucination", "Empty extraction",
+"Block exceeded").
+
+## Observations (`--translate` vs direct)
+
+- Translate mode is worse for every model tested. Coverage drops for the
+  two weaker models (ministral 47% → 19%, gemma 68% → 42%), and the
+  `gpt-5.6` models, while still covering 100%, need more retries (luna
+  7 → 10 failed blocks, terra 3 → 5) and now produce some empty extractions
+  (luna 0 → 4, terra 1 → 2).
+- Hallucination rejects increase substantially for the weaker models
+  (gemma 6 → 34, ministral 132 → 217). Plausible cause: the modern-English
+  paraphrase in the prompt pulls the model away from copying Norton
+  verbatim, so it fabricates Norton-like text more often.
+- Conclusion: direct comparison is strictly better for all four models.
+  The extra translation step costs one more LLM call per query and provides
+  no measurable benefit.
+
+## Structural analysis: why even top-tier models fail
+
+The direct-comparison results hide a structural problem: even the strongest
+model (terra, 100% coverage) needed retries, and mid-tier models fail in
+ways that do not depend on model quality. Log analysis across all 8 runs
+shows the root cause is the task formulation, not the models.
+
+### Finding 1: island detection never fires (dead code)
+
+`Island: True` occurs **0 times in all 8 full-canto logs**. Reason: an
+accepted extraction is always a contiguous *prefix* of the remaining Norton
+text (`norton_text.startswith(extracted)`, enforced at the end of
+validation). Replacing the words of a contiguous prefix in order always
+produces one contiguous `#` region at the start of the text, so the first
+unmatched alphabetic character sits immediately after that region and no `#`
+can appear after it — `is_block_complete()` therefore returns True on
+*every* successful extraction. Block completion is decided entirely by
+extraction acceptance; the island mechanism, designed to handle
+Italian/English word-order divergence, is unreachable. The algorithm
+degenerates to greedy line-by-line prefix consumption.
+
+### Finding 2: "Not at beginning" rejects are structural, not model failures
+
+Reject reasons per attempt, direct mode:
+
+| Model | Hallucination | Not at beginning | Length ratio |
+|---|---|---|---|
+| `google:gemma-4-31b-it` | 6 | **77** | 3 |
+| `openai:gpt-5.6-luna` | 8 | **11** | 4 |
+| `openai:gpt-5.6-terra` | 7 | **0** | 3 |
+| `ollama:ministral-3:14b` | 132 | 39 | 12 |
+
+gemma's dominant failure is extracting verbatim Norton text that is *correct
+in content but not the next contiguous chunk of English*: Norton's prose
+word order cannot in general be partitioned into per-Italian-line contiguous
+prefixes, so for any model there are queries whose correct answer is
+unrepresentable under the current validation. These show up as model
+rejections but are actually unsatisfiable-task failures. Strong models
+compensate because translations are roughly monotonic at line granularity
+(terra: 0 such rejects); weaker models cannot, and burn their retries there.
+
+### Finding 3: "variable-length blocks" barely exist
+
+Block size distribution (direct mode): terra 130/133 blocks are single-line,
+luna 123/129, gemma 71/79, ministral 25/40. Multi-line blocks arise almost
+only from the failure → add-a-line retry path, not from genuine enjambment
+handling.
+
+### Conclusion
+
+The bottleneck is the formulation "each Italian line = a contiguous verbatim
+prefix of the remaining Norton text". Model quality only changes how often
+the model can compensate for it. Redesign directions, in rough order of
+promise:
+
+1. **LLM-free monotonic alignment**: align Italian lines to Norton sentence
+   pieces with dynamic programming over cross-lingual sentence embeddings
+   (e.g. LaBSE / multilingual-e5), Gale-Church style. Deterministic, cheap,
+   and word-order divergence is handled by the similarity function instead
+   of a prefix constraint.
+2. **LLM as aligner, not extractor**: ask for word/phrase-level
+   correspondence pairs (Italian tokens → Norton spans) for a whole
+   paragraph at once, then validate monotonicity and span existence
+   mechanically. The correct answer is always representable.
+3. **Anchor-based hybrid**: first fix high-confidence anchors (proper nouns,
+   numbers, embedding-nearest sentence pairs), then fill the gaps with
+   approach 1 or 2.
 
 ## Bug history
 
@@ -79,7 +181,13 @@ Three bugs were found and fixed while testing the models above:
 
 - Add per-line coverage as a first-class metric in the tool's own output,
   instead of computing it by hand from the log each time.
+- Pick a redesign direction for the core algorithm (see "Structural
+  analysis" above): embedding-based DP alignment, paragraph-level LLM
+  correspondence extraction, or an anchor-based hybrid.
 - Decide how to handle silently-skipped lines: leave gaps, retry them with a
   stronger model, or flag them explicitly in the output.
 - Investigate why `gemma-4-31b-it` returns an empty `english` field so often
   — a prompt-wording issue, or a genuine model limitation.
+- Decide what to do with `--translate`: it underperformed direct comparison
+  with every model tested (see above). Candidates are removing the flag or
+  keeping it as an experiment switch.
