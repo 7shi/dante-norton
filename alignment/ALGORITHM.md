@@ -56,7 +56,8 @@ The algorithm supports two modes:
 1. Use modern translation as the meaning reference
 2. Search Norton's text for equivalent meaning (not word-for-word)
 3. Extract the exact text from Norton's prose
-4. Start from the beginning of the current paragraph
+4. Extract the span where it appears (only `--strict-prefix` asks the model
+   to start from the beginning of the paragraph)
 
 **Key Points (Both Modes):**
 - Uses structured LLM output (JSON with `italian`/`english` fields) for extraction
@@ -66,51 +67,63 @@ The algorithm supports two modes:
 
 ## Block Boundary Detection
 
-### Island Detection Algorithm
+### Island Detection
 
 Determines when a block of Italian lines is complete.
 
+An accepted extraction is located in the remaining Norton paragraph text, and
+its **word offset** — how many words precede it — decides the outcome:
+
 ```python
-def is_block_complete(norton_text, matched_words):
-    # Replace matched words with markers
-    test_text = norton_text
-    for word in matched_words:
-        test_text = test_text.replace(word, "#" * len(word), 1)
-    
-    # Find first unmatched character
-    first_alpha_idx = next((i for i, c in enumerate(test_text) if c.isalpha()), None)
-    
-    if first_alpha_idx is None:
-        return True  # All text matched
-    
-    # Check if markers appear after unmatched text (island)
-    has_island = '#' in test_text[first_alpha_idx:]
-    
-    return not has_island  # Complete if no islands
+offset_words = count_words(norton_text[:idx])   # idx = position of the span
+
+if offset_words > window_words:
+    reject                  # too far in to be plausible; costs a retry attempt
+elif offset_words > 0:
+    island                  # block incomplete: add the next Italian line
+else:
+    complete                # span starts the remaining text: finalize the block
 ```
 
 **Logic:**
-- An "island" is matched text after unmatched text
-- Indicates word order differences between Italian and English
-- Block is complete when all text from start is matched continuously
 
-**Known issue (measured):** in practice `has_island` is always False. An
-accepted extraction is always a contiguous prefix of the remaining Norton
-text (position check below), so the `#` markers always form one contiguous
-region at the start, and no `#` can appear after the first unmatched
-character. `is_block_complete()` therefore returns True on every successful
-extraction — `Island: True` occurred 0 times across all 8 full-canto test
-runs. Block completion is decided by extraction acceptance alone;
-multi-line blocks arise from the failure-retry path, not from island
-detection. See [MEMO.md](MEMO.md) "Structural analysis" for details and
-redesign implications.
+- An "island" is a valid span with unmatched text still in front of it.
+- That leading text has to belong to a *later* Italian line, which is exactly
+  the Italian/English word-order divergence the mechanism exists to absorb.
+  Adding the next line and re-querying lets the model return a span that
+  covers both.
+- An island costs a line, not a retry attempt: the extraction succeeded, only
+  the block is unfinished.
+
+**Search window:** `window_words` (default 20, `--window-words`) bounds how far
+in a span may start. Without the bound, a span matching incidentally at the far
+end of the paragraph would be read as an island and grow the block until
+`MAX_BLOCK_LINES`, turning rejections into skipped lines. `--strict-prefix`
+sets the window to 0, which requires the span to be a strict prefix and
+reproduces the pre-fix behavior for A/B comparison.
+
+**History:** island detection was previously unreachable. Validation accepted a
+span only if `norton_text.startswith(extracted)`, so every input reaching the
+detector was already a contiguous prefix and `Island: True` occurred 0 times
+across all 8 full-canto test runs. The `#`-marker implementation that computed
+this indirectly (and mis-matched short words as substrings) was removed in
+favor of the offset comparison above. See [MEMO.md](MEMO.md) "Structural
+analysis" and [ISLAND_FIX.md](ISLAND_FIX.md) for the requirements this change
+implements.
 
 ### Enjambment Handling
 
-When extraction fails for a single line:
+A block grows to N+1 lines by either of two paths:
+
+**Extraction failure** — no attempt produced a valid span:
 1. Return `None` to signal more context needed
 2. Automatically retry with N+1 lines
-3. Continue until successful extraction or maximum attempts
+3. Continue until successful extraction or `MAX_BLOCK_LINES`
+
+**Island** — a valid span was found, but text precedes it:
+1. Accept the span but do not finalize the block
+2. Add the next Italian line and re-query against the same paragraph text
+3. Continue until a span starts at offset 0 or `MAX_BLOCK_LINES`
 
 **Example:**
 - Line 4 alone: "Ahi quanto a dir qual era è cosa dura" (extraction fails)
@@ -131,11 +144,15 @@ Validation relies on mechanical checks against the Norton source text rather tha
    - If extracted word count > 2.0 × Italian word count → reject
    - Prevents over-extraction of adjacent lines
 
-3. **Position Check:**
-   - Extracted text must appear at the beginning of remaining Norton text (exact or punctuation-normalized match)
-   - Ensures sequential processing
+3. **Position Check (search window):**
+   - The span must start no more than `window_words` words into the remaining
+     Norton text; beyond that it is rejected
+   - Within the window, the offset is not a pass/fail signal but a block
+     boundary signal (see Island Detection above)
+   - Punctuation-only text preceding a span does not count as an offset, since
+     `count_words()` counts word tokens only
 
-Each of the up to 3 retries re-runs the extraction prompt from scratch; there is no separate semantic-equivalence validation step.
+Each of the up to 3 retries re-runs the extraction prompt from scratch; there is no separate semantic-equivalence validation step. An island does not consume a retry attempt.
 
 ## Quote Stripping
 
@@ -193,31 +210,44 @@ For each Norton paragraph:
         Stage 2: Extract corresponding Norton text (structured JSON output)
 
         Validate extraction:
+            - Non-empty?
             - Found verbatim in Norton text? (existence check)
             - Length ratio < 2.0?
-            - Position correct?
+            - Word offset <= window_words?
 
         If validation fails:
             Retry (up to 3 attempts), then return None → try with more lines
 
+        If accepted with offset > 0:
+            Island → add the next Italian line and re-query (no retry consumed)
+
+        If accepted with offset == 0:
+            Finalize the block; consume the span from the paragraph text
+
         If block exceeds 6 lines with no success:
             Skip these line(s) (no output); retry next line(s)
             against the same paragraph
-
-        A successful extraction always finalizes the block
-        (island detection never fires in practice — see known issue above)
 ```
 
 ## Success Metrics
+
+Coverage — Italian lines that ended up in an output block, out of the canto
+total — is reported by the tool itself at the end of a run and written to the
+log. It is the meaningful completion metric: a block that fails after
+`MAX_BLOCK_LINES` is skipped with no output, so reaching the last Italian line
+does not imply every line was covered.
 
 Full-canto results across models and modes are tracked in
 [MEMO.md](MEMO.md). Key findings from Inferno Canto 1 (136 lines):
 
 - Direct comparison (default) outperforms `--translate` with every model
   tested.
-- Coverage ranges from 19% (local 14B model) to 100% (top-tier models), but
-  even top-tier models need retries — the prefix-based task formulation is
-  the bottleneck (see MEMO.md "Structural analysis").
+- Coverage ranges from 19% (local 14B model) to 100% (top-tier models).
+
+**Note:** the MEMO.md numbers predate the search-window change and describe
+strict-prefix behavior; they are reproducible with `--strict-prefix` and serve
+as the A/B baseline. They have not yet been re-measured with the default
+window.
 
 ## Configuration
 
@@ -225,6 +255,8 @@ Full-canto results across models and modes are tracked in
 - **Temperature:** 1.0
 - **Max Retries:** 3 per extraction attempt
 - **Length Ratio Threshold:** 2.0
+- **Search Window:** 20 words (`--window-words`); 0 (`--strict-prefix`)
+  requires the span to be a strict prefix, reproducing the pre-fix baseline
 - **Max Block Lines:** 6 (beyond this the block's line(s) are skipped with
   no output; the paragraph text is preserved for the next line(s))
 - **Default Mode:** Direct comparison (Italian text used directly)
@@ -238,6 +270,11 @@ Full-canto results across models and modes are tracked in
 2. May struggle with highly compressed or expanded translations
 3. Requires sufficient context (paragraph-level alignment)
 4. Computational cost: Multiple LLM calls per line
+5. Only the first 500 characters of the remaining paragraph are shown to the
+   model, so a correct span past that cutoff is unreachable
+6. A block still maps N Italian lines to one contiguous Norton span; the
+   correspondence *inside* a multi-line block is not resolved (see MEMO.md
+   Finding 3)
 
 ## Future Improvements
 
@@ -245,7 +282,11 @@ Full-canto results across models and modes are tracked in
 2. **Parallel Processing:** Process multiple paragraphs simultaneously
 3. **Human Review Interface:** Flag uncertain alignments for manual review
 4. **Alternative Models:** Test with larger models (70B+) for better accuracy
-5. **Full Canto Test:** Validate on all 136 lines of Canto 1
+5. **Re-measure the baseline:** Re-run MEMO.md's model comparison with the
+   search window enabled and compare against `--strict-prefix`
+6. **Line-level correspondence:** Resolve alignment inside multi-line blocks
+   (embedding-based DP or paragraph-level correspondence extraction — see
+   MEMO.md "Redesign directions")
 
 ## Files
 
@@ -256,5 +297,6 @@ Full-canto results across models and modes are tracked in
 
 ## References
 
+- ISLAND_FIX.md - Requirements for the search-window / island change
 - PLAN.md - Original implementation planning document
 - PRIOR_WORK.md - Analysis of previous alignment attempts
