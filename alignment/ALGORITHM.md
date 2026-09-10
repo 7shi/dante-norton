@@ -14,11 +14,32 @@ The goal is to determine which Norton sentences correspond to which Italian line
 
 ## Two-Stage Extraction Algorithm
 
-### Stage 1: Modern Translation
+The algorithm supports two modes:
+- **Direct Comparison (default):** Uses Italian text directly as reference
+- **Translation-Based (`--translate`):** Translates Italian to modern English first
+
+### Mode 1: Direct Comparison (Default)
+
+**Purpose:** Align using Italian text directly without intermediate translation.
+
+**Process:**
+1. Take Italian line(s) as input
+2. Use Italian text directly as semantic reference
+3. Search Norton's text for equivalent meaning
+4. Extract the exact text from Norton's prose
+
+**Advantages:**
+- Faster (one fewer LLM call per block)
+- Avoids potential translation errors
+- Works well when LLM understands both Italian and English
+
+### Mode 2: Translation-Based (`--translate` flag)
 
 **Purpose:** Create a semantic reference point independent of Norton's literary style.
 
 **Process:**
+
+**Stage 1: Modern Translation**
 1. Take Italian line(s) as input
 2. Translate to simple, modern English using LLM
 3. For single lines: translate individually
@@ -28,17 +49,13 @@ The goal is to determine which Norton sentences correspond to which Italian line
 - Italian: "Nel mezzo del cammin di nostra vita"
 - Modern: "In the middle of our life's journey"
 
-### Stage 2: Norton Text Extraction
-
-**Purpose:** Find the semantically equivalent text in Norton's translation.
-
-**Process:**
+**Stage 2: Norton Text Extraction**
 1. Use modern translation as the meaning reference
 2. Search Norton's text for equivalent meaning (not word-for-word)
 3. Extract the exact text from Norton's prose
 4. Start from the beginning of the current paragraph
 
-**Key Points:**
+**Key Points (Both Modes):**
 - Uses plain text LLM output (structured output caused over-extraction)
 - Applies symmetric quote stripping (only removes quotes when text is fully enclosed)
 - Restores trailing punctuation from original Norton text
@@ -160,11 +177,13 @@ For each Norton paragraph:
 
 ## Success Metrics
 
-From test on Inferno Canto 1, Lines 1-9:
+From test on Inferno Canto 1, Lines 1-9 (using **direct comparison mode**, default):
 - **9 Italian lines → 8 blocks**
 - 6 individual lines mapped correctly
 - 1 enjambment case detected (Lines 4-5 merged)
 - 100% success rate on test set
+
+**Note:** Both modes (direct comparison and translation-based) are expected to produce similar results, though direct comparison is faster.
 
 ## Configuration
 
@@ -172,6 +191,8 @@ From test on Inferno Canto 1, Lines 1-9:
 - **Temperature:** 0.3
 - **Max Retries:** 3 per extraction attempt
 - **Length Ratio Threshold:** 1.8
+- **Default Mode:** Direct comparison (Italian text used directly)
+- **Translation Mode:** Optional `--translate` flag for two-stage approach
 
 ## Limitations
 
