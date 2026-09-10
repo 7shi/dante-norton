@@ -4,7 +4,7 @@ A project to reconstruct Charles Eliot Norton's prose translation of Dante's Div
 
 ## Overview
 
-**Current Status**: Preparation phase completed. The actual reconstruction work has not yet begun.
+**Current Status**: An LLM-based line alignment algorithm is implemented and under active testing (see [alignment/](alignment/)). Full-canto reconstruction quality still varies significantly by LLM backend; see [alignment/MEMO.md](alignment/MEMO.md) for current results.
 
 For the implementation plan, see [PLAN.md](PLAN.md).
 
@@ -38,6 +38,7 @@ This project is licensed under [CC0 1.0 Universal](LICENSE) (Public Domain).
 - en-norton/: English (Norton translation). See [en-norton/README.md](en-norton/README.md)
 - tokenize/: Italian tokenizer with advanced apostrophe handling. See [tokenize/README.md](tokenize/README.md) for details.
 - dante_norton/: Python package for parsing Dante's Divine Comedy cantos. See [dante_norton/README.md](dante_norton/README.md) for API reference.
+- alignment/: Italian-Norton line alignment scripts. See [alignment/README.md](alignment/README.md) for usage, [alignment/ALGORITHM.md](alignment/ALGORITHM.md) for algorithm details, and [alignment/MEMO.md](alignment/MEMO.md) for LLM backend comparison notes.
 
 ## Installation
 

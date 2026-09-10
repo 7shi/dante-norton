@@ -1,18 +1,22 @@
 # Alignment Scripts
 
-Alignment scripts for Italian original text and Norton English translation.
+Alignment scripts for the Italian original text and Norton's English translation.
 
 ## Overview
 
-Implementation of the variable-length block alignment algorithm based on PLAN.md.
-Uses LLM to obtain word correspondences and automatically detect block boundaries.
+Implements variable-length block alignment between Dante's Italian lines and
+Norton's English prose, using an LLM to extract the corresponding Norton text
+for each Italian line (or group of lines, for enjambment) and island detection
+to find block boundaries. See [ALGORITHM.md](ALGORITHM.md) for full algorithm
+details, and [MEMO.md](MEMO.md) for a comparison of results across different
+LLM backends.
 
 ## Usage
 
 ### Basic Execution
 
 ```bash
-# Process first 20 lines of Canto I
+# Process all of Canto I
 uv run alignment/align_canto.py 1
 
 # Process another Canto
@@ -22,63 +26,64 @@ uv run alignment/align_canto.py 2
 ### Options
 
 ```bash
-# Specify number of lines to process
+# Limit the number of Italian lines processed (default: unlimited)
 uv run alignment/align_canto.py 1 --max-lines 50
 
 # Specify LLM model (default: ollama:ministral-3:14b)
-uv run alignment/align_canto.py 1 --model ollama:qwen2.5:32b
+uv run alignment/align_canto.py 1 --model google:gemini-2.5-flash
 
-# Adjust temperature (default: 0.3, lower for better accuracy)
-uv run alignment/align_canto.py 1 --temperature 0.1
+# Adjust temperature (default: 1.0)
+uv run alignment/align_canto.py 1 --temperature 0.3
 
 # Enable thinking (disabled by default)
 uv run alignment/align_canto.py 1 --think
+
+# Translate Italian to modern English before matching, instead of
+# comparing the Italian text directly (default: direct comparison)
+uv run alignment/align_canto.py 1 --translate
 ```
 
-### Examples
-
-```bash
-# Phase 1 test: Process first 20 lines (default settings)
-# Model: ollama:ministral-3:14b, Think: False, Temperature: 0.3
-uv run alignment/align_canto.py 1
-
-# Process more lines
-uv run alignment/align_canto.py 1 --max-lines 100
-
-# Use a different model
-uv run alignment/align_canto.py 1 --model ollama:qwen2.5:32b --temperature 0.2
-```
+The `--model` value is passed through to `llm7shi`; use an `ollama:`, `google:`,
+or `openai:` prefix to select the backend. Cloud backends need the
+corresponding API key set in the environment (e.g. `GEMINI_API_KEY`).
 
 ## Output
 
-Results are saved to `alignment/output/canto_XX.txt`.
+Results are written to `alignment/output/canto_XX.log`, containing:
 
-- Each block is separated by a blank line
-- Italian lines within a block are displayed consecutively
+- The full processing log (per-line progress, retries, rejections)
+- Detailed Italian + English block listing
+- Norton English text with line breaks at block boundaries
+- Total block count
 
-## Algorithm (Simple Version)
+Progress and errors are also printed to the console as the script runs.
 
-1. For each Norton English paragraph:
-2. Add Italian lines one by one
-3. Query LLM for word correspondences
-4. Replace matched words with `#` markers
-5. If prefix (up to last `#`) has no alphabetic characters, block is complete
-6. Move to next paragraph when block is complete
+## Algorithm
 
-*Note: This version does not implement gap detection or fallback mechanisms*
+Summary: for each Norton paragraph, Italian lines are added to a block one at
+a time; the LLM is asked to extract the corresponding Norton text (as
+structured JSON), which is validated with hard, mechanical checks (must
+appear verbatim in the Norton text, length ratio, position) rather than a
+separate LLM judgment call. Island detection determines when a block is
+complete. See [ALGORITHM.md](ALGORITHM.md) for the full description,
+including failure handling and configuration constants.
 
 ## Requirements
 
-- Python 3.7+
-- dante_norton library (parent directory)
-- llm7shi (dependency of LLMClient)
-- Local LLM (Ollama, etc.)
-  - Default: ollama:ministral-3:14b
+- Python 3.13+ (see `pyproject.toml`)
+- `dante_norton` library (parent directory)
+- `llm7shi` (dependency of `LLMClient`)
+- An LLM backend: local (Ollama) or cloud (Gemini, OpenAI-compatible) with
+  the relevant API key set
 
 ## Troubleshooting
 
 ### Matching failures
 
-- Lower `--temperature` (0.1-0.3 recommended)
-- Use a larger model (70B or higher)
-- Enable thinking with `--think` flag (may improve accuracy but slower)
+Backend choice matters more than any flag here — see
+[MEMO.md](MEMO.md) for measured coverage differences between models on the
+same canto. If a local/small model is struggling:
+
+- Try a larger or cloud-hosted model
+- Enable thinking with `--think` flag (may improve accuracy but is slower)
+- Adjust `--temperature`

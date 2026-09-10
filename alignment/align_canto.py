@@ -25,6 +25,17 @@ class LineResult(BaseModel):
     english: str
 
 
+def parse_json_object(text: str) -> dict:
+    """
+    Parse a JSON object out of an LLM response, tolerating surrounding
+    Markdown code fences (opening and/or closing, or neither) and any
+    other trailing text the model may add.
+    """
+    text = text.strip()
+    text = re.sub(r'^```(?:json)?\s*', '', text)  # strip leading fence, if any
+    return json.JSONDecoder().raw_decode(text)[0]  # ignore trailing garbage
+
+
 # Global log file handle
 _log_file = None
 
@@ -34,6 +45,12 @@ def log_print(*args, **kwargs):
     if _log_file:
         print(*args, **kwargs, file=_log_file)
         _log_file.flush()
+
+
+def notify(*args, **kwargs):
+    """Print to both console (progress/errors) and log file"""
+    print(*args, **kwargs, flush=True)
+    log_print(*args, **kwargs)
 
 
 class ItalianLine:
@@ -183,9 +200,14 @@ Output in JSON format:
 
         try:
             response = llm.call(extraction_prompt, schema=LineResult)
-            result = json.loads(response)
-            extracted = result.get("english", "").strip()
+        except Exception as e:
+            notify(f"    ✗ LLM call failed: {e}")
+            last_validation = "NO"
+            continue
 
+        try:
+            result = parse_json_object(response)
+            extracted = result.get("english", "").strip()
         except Exception as e:
             log_print(f"    ✗ Failed to parse structured output: {e}")
             last_validation = "NO"
@@ -195,6 +217,14 @@ Output in JSON format:
         if (extracted.startswith('"') and extracted.endswith('"')) or \
            (extracted.startswith("'") and extracted.endswith("'")):
             extracted = extracted[1:-1]
+
+        # Reject empty extractions: an empty string would otherwise pass the
+        # length-ratio check (0 / N = 0.0) and norton_text.startswith("") is
+        # always True, so it would be wrongly accepted below.
+        if not extracted.strip():
+            log_print(f"    ✗ Empty extraction")
+            last_validation = "NO"
+            continue
 
         # Check for hallucination: extracted text must exist in Norton text
         # Strip leading/trailing quotes and whitespace for matching
@@ -254,7 +284,7 @@ Output in JSON format:
         return (english_text, english_text.split())
     else:
         # Failed after 3 attempts - return None to signal caller to try with more lines
-        log_print(f"    ✗ Failed after 3 attempts - need more context")
+        notify(f"    ✗ Failed after 3 attempts - need more context")
         return None
 
 
@@ -290,7 +320,9 @@ def align_paragraph(llm: LLMClient, italian_lines: List[ItalianLine],
 
     Returns:
         Tuple of (List[AlignmentBlock], next_start_idx, remaining_paragraph_text, skipped)
-        skipped is True if alignment failed and paragraph was skipped
+        skipped is True if the block failed to align after MAX_BLOCK_LINES lines;
+        the unconsumed norton_paragraph text is preserved (not discarded) so the
+        caller can retry with the next Italian line(s) against the same paragraph.
     """
     italian_block = []
     idx = start_idx
@@ -303,11 +335,13 @@ def align_paragraph(llm: LLMClient, italian_lines: List[ItalianLine],
         italian_block.append(italian_lines[idx])
         idx += 1
 
-        log_print(f"  Line {italian_block[-1].line_num}: {italian_block[-1].full_text}")
+        print()
+        notify(f"  Line {italian_block[-1].line_num}/{len(italian_lines)}: {italian_block[-1].full_text}")
 
-        # Safety: if block gets too large, skip to next paragraph
+        # Safety: if block gets too large, give up on these lines and let the
+        # caller retry with the next Italian line(s) against this same paragraph
         if len(italian_block) > MAX_BLOCK_LINES:
-            log_print(f"    ⚠ Block exceeded {MAX_BLOCK_LINES} lines, skipping to next paragraph")
+            notify(f"    ⚠ Block exceeded {MAX_BLOCK_LINES} lines, skipping these line(s)")
             break
 
         # Query LLM for word correspondences
@@ -325,7 +359,7 @@ def align_paragraph(llm: LLMClient, italian_lines: List[ItalianLine],
         if is_block_complete(norton_paragraph, matched_words):
             # Use the extracted text directly (preserves punctuation)
             matched_text = extracted_text
-            log_print(f"    ✓ Complete: {matched_text}")
+            notify(f"    ✓ Complete: {matched_text}")
 
             remaining_text = norton_paragraph[len(matched_text):].lstrip(" ,;.!?")
 
@@ -335,69 +369,9 @@ def align_paragraph(llm: LLMClient, italian_lines: List[ItalianLine],
 
         log_print(f"    → Continue")
 
-    # Reached end (failed to align)
-    block = AlignmentBlock(italian_block, norton_paragraph)
-    return [block], idx, "", True  # True indicates skip occurred
-
-
-def find_matching_italian_line(llm: LLMClient, norton_text: str,
-                                italian_lines: List[ItalianLine],
-                                start_idx: int, search_range: int = 20) -> int:
-    """
-    Find which Italian line corresponds to the start of a Norton paragraph.
-
-    Args:
-        llm: LLM client
-        norton_text: Start of Norton paragraph
-        italian_lines: List of all Italian lines
-        start_idx: Current index in italian_lines
-        search_range: How many lines ahead to search
-
-    Returns:
-        Index of the matching Italian line, or start_idx if not found
-    """
-    # Get first ~100 chars of Norton text for matching
-    norton_start = norton_text[:150].strip()
-
-    # Build candidates from nearby Italian lines
-    end_idx = min(start_idx + search_range, len(italian_lines))
-    candidates = []
-    for i in range(start_idx, end_idx):
-        candidates.append(f"{i+1}. (Line {italian_lines[i].line_num}) {italian_lines[i].full_text}")
-
-    if not candidates:
-        return start_idx
-
-    prompt = f"""Which Italian line corresponds to the START of this Norton English text?
-
-Norton English (beginning):
-{norton_start}
-
-Italian line candidates:
-{chr(10).join(candidates)}
-
-Reply with ONLY the number (1, 2, 3, etc.) of the best matching Italian line.
-If the Norton text starts in the middle of a line's meaning, choose that line.
-If unsure, reply with 1."""
-
-    llm.history = []
-    response = llm.call(prompt).strip()
-
-    # Parse response
-    try:
-        # Extract first number from response
-        import re
-        match = re.search(r'\d+', response)
-        if match:
-            choice = int(match.group())
-            if 1 <= choice <= len(candidates):
-                new_idx = start_idx + choice - 1
-                log_print(f"    ↻ Re-sync: Norton start matches Italian line {italian_lines[new_idx].line_num}")
-                return new_idx
-    except:
-        pass
-
-    return start_idx
+    # Failed to align these lines: preserve norton_paragraph untouched so the
+    # remaining Italian lines can still be matched against it
+    return [], idx, norton_paragraph, True
 
 
 def align_canto(llm: LLMClient, italian_filepath: str, norton_filepath: str,
@@ -442,7 +416,7 @@ def align_canto(llm: LLMClient, italian_filepath: str, norton_filepath: str,
         if para_num == 1:
             continue
 
-        log_print(f"Paragraph {para_num}: {norton_paragraph[:60]}...")
+        notify(f"Paragraph {para_num} (Italian line {italian_idx + 1}/{len(italian_lines)}): {norton_paragraph[:60]}...")
 
         # Remove annotation markers
         clean_paragraph = re.sub(r'\[\d+\]', '', norton_paragraph)
@@ -450,7 +424,6 @@ def align_canto(llm: LLMClient, italian_filepath: str, norton_filepath: str,
         # Process multiple blocks within this paragraph
         remaining_text = clean_paragraph
         block_num = 1
-        need_resync = False
 
         # Minimum remaining text length to continue processing
         MIN_REMAINING_LENGTH = 10
@@ -462,10 +435,10 @@ def align_canto(llm: LLMClient, italian_filepath: str, norton_filepath: str,
             )
 
             if skipped:
-                # Alignment failed, need to re-sync at next paragraph
-                need_resync = True
-                log_print(f"    ⚠ Alignment failed, will re-sync at next paragraph")
-                break
+                # These Italian line(s) failed to align; remaining_text is
+                # unchanged, so retry with the next line(s) against it
+                log_print()
+                continue
 
             blocks.extend(new_blocks)
             block_num += len(new_blocks)
@@ -473,19 +446,6 @@ def align_canto(llm: LLMClient, italian_filepath: str, norton_filepath: str,
 
             if italian_idx >= len(italian_lines):
                 break
-
-        # If we need to re-sync, find the matching Italian line for the next paragraph
-        if need_resync and italian_idx < len(italian_lines):
-            # Peek at next paragraph to find matching Italian line
-            next_para_idx = para_num
-            for next_para_num, (next_para, _) in enumerate(norton_canto.lines, 1):
-                if next_para_num > para_num and next_para.strip():
-                    next_para_clean = re.sub(r'\[\d+\]', '', next_para)
-                    if len(next_para_clean.strip()) >= MIN_REMAINING_LENGTH:
-                        italian_idx = find_matching_italian_line(
-                            llm, next_para_clean, italian_lines, italian_idx
-                        )
-                        break
 
         if italian_idx >= len(italian_lines):
             break
