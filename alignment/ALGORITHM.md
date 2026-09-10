@@ -56,7 +56,8 @@ The algorithm supports two modes:
 4. Start from the beginning of the current paragraph
 
 **Key Points (Both Modes):**
-- Uses plain text LLM output (structured output caused over-extraction)
+- Uses structured LLM output (JSON with `italian`/`english` fields) for extraction
+- Rejects extractions whose text cannot be found verbatim in the Norton paragraph (hallucination check)
 - Applies symmetric quote stripping (only removes quotes when text is fully enclosed)
 - Restores trailing punctuation from original Norton text
 
@@ -104,28 +105,29 @@ When extraction fails for a single line:
 
 ## Validation
 
-### Semantic Validation
-
-Validates that extracted Norton text matches the modern translation:
-- **Input:** Modern translation + Extracted Norton text
-- **Output:** YES/NO decision via structured LLM output
-- **Focus:** Semantic equivalence, not word-for-word matching
+Validation relies on mechanical checks against the Norton source text rather than a separate LLM judgment call.
 
 ### Hard Constraints
 
-1. **Length Ratio Check:**
-   - If extracted word count > 1.8 × Italian word count → reject
+1. **Existence Check (anti-hallucination):**
+   - Extracted text must be found verbatim (case-insensitive) within the Norton paragraph
+   - Rejects fabricated or paraphrased extractions
+
+2. **Length Ratio Check:**
+   - If extracted word count > 2.0 × Italian word count → reject
    - Prevents over-extraction of adjacent lines
 
-2. **Position Check:**
-   - Extracted text must appear at the beginning of remaining Norton text
+3. **Position Check:**
+   - Extracted text must appear at the beginning of remaining Norton text (exact or punctuation-normalized match)
    - Ensures sequential processing
+
+Each of the up to 3 retries re-runs the extraction prompt from scratch; there is no separate semantic-equivalence validation step.
 
 ## Quote Stripping
 
 **Symmetric Quote Removal:**
 ```python
-extracted = response.strip()
+extracted = result.get("english", "").strip()
 if (extracted.startswith('"') and extracted.endswith('"')) or \
    (extracted.startswith("'") and extracted.endswith("'")):
     extracted = extracted[1:-1]
@@ -138,19 +140,30 @@ if (extracted.startswith('"') and extracted.endswith('"')) or \
 
 ## Punctuation Restoration
 
-Restores trailing punctuation from original Norton text:
+Restores trailing punctuation from original Norton text. By this point `idx`
+is already known (the existence check above found `extracted` in
+`norton_text`), so no `-1` guard is needed:
 
 ```python
-idx = norton_text.lower().find(extracted.lower())
-if idx != -1:
-    end_pos = idx + len(extracted)
-    if end_pos < len(norton_text):
-        next_char = norton_text[end_pos]
-        if next_char in ',.;:!?' and not extracted.endswith(next_char):
-            extracted = extracted + next_char
+end_pos = idx + len(extracted)
+if end_pos < len(norton_text):
+    next_char = norton_text[end_pos]
+    if next_char in ',.;:!?' and not extracted.endswith(next_char):
+        extracted = extracted + next_char
 ```
 
 This ensures output matches original formatting (e.g., "dark wood," not "dark wood").
+
+## Failure Recovery (Re-sync)
+
+If a paragraph's alignment accumulates more than 6 Italian lines (`MAX_BLOCK_LINES`) without a successful extraction, that paragraph is abandoned instead of looping indefinitely:
+
+1. Stop accumulating lines for the current paragraph and mark it as skipped
+2. Peek at the next non-empty Norton paragraph
+3. Ask the LLM which of the next ~20 Italian lines corresponds to the start of that paragraph (`find_matching_italian_line`)
+4. Resume alignment from that Italian line
+
+This bounds the cost of a single bad match and prevents one failure from permanently desynchronizing the rest of the canto.
 
 ## Processing Flow
 
@@ -158,18 +171,21 @@ This ensures output matches original formatting (e.g., "dark wood," not "dark wo
 For each Norton paragraph:
     For each Italian line:
         Add line to current block
-        
-        Stage 1: Translate block to modern English
-        Stage 2: Extract corresponding Norton text
-        
+
+        (--translate only) Stage 1: Translate block to modern English
+        Stage 2: Extract corresponding Norton text (structured JSON output)
+
         Validate extraction:
-            - Semantic match? (LLM validation)
-            - Length ratio < 1.8?
+            - Found verbatim in Norton text? (existence check)
+            - Length ratio < 2.0?
             - Position correct?
-        
+
         If validation fails:
-            Return None → Retry with more lines
-        
+            Retry (up to 3 attempts), then return None → try with more lines
+
+        If block exceeds 6 lines with no success:
+            Skip paragraph, re-sync Italian index at next paragraph
+
         Check block completion (island detection):
             If complete → Finalize block
             If islands → Continue to next Italian line
@@ -188,9 +204,10 @@ From test on Inferno Canto 1, Lines 1-9 (using **direct comparison mode**, defau
 ## Configuration
 
 - **LLM Model:** Ollama (ministral-3:14b)
-- **Temperature:** 0.3
+- **Temperature:** 1.0
 - **Max Retries:** 3 per extraction attempt
-- **Length Ratio Threshold:** 1.8
+- **Length Ratio Threshold:** 2.0
+- **Max Block Lines:** 6 (paragraph is skipped and re-synced beyond this)
 - **Default Mode:** Direct comparison (Italian text used directly)
 - **Translation Mode:** Optional `--translate` flag for two-stage approach
 
