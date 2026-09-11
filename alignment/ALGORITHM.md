@@ -2,351 +2,301 @@
 
 ## Overview
 
-This document describes the algorithm used to align Italian lines from Dante's *Inferno* with Charles Eliot Norton's English prose translation.
+This document describes the current, recommended algorithm for aligning
+Italian lines from Dante's *Inferno* with Charles Eliot Norton's English
+prose translation: a three-stage pipeline that hierarchically decomposes
+each Norton paragraph down to one row per Italian line.
+
+```
+align_ranges.py          align3.py                  align1.py
+paragraph -> range   ->   paragraph -> tercet   ->   tercet -> line
+(whole canto,              (word-rearranging          (word-rearranging
+ 1 LLM call)                 split, tercet-sized)        split, per-line)
+```
+
+For the earlier, superseded single-stage extraction algorithm
+(`align_canto.py`) and the extraction-based two-stage `align3.py` it was
+replaced by, see [MEMO.md](MEMO.md) - the historical algorithm summary near
+the top, and "Two-stage, tercet-first alignment" further down.
 
 ## Core Challenge
 
 Italian terza rima poetry and English prose have different structures:
-- Italian: Line-based with fixed meter and rhyme scheme
-- English (Norton): Paragraph-based prose with natural sentence flow
+- Italian: line-based, with fixed meter and rhyme scheme.
+- English (Norton): paragraph-based prose with natural sentence flow, whose
+  word order does not always follow the Italian line-by-line - Norton
+  sometimes reorders content relative to an Italian hyperbaton (e.g. moving
+  a delayed subject earlier for readability).
 
-The goal is to determine which Norton sentences correspond to which Italian lines, handling cases where word order differs or multiple Italian lines map to a single English sentence.
+The goal is one Norton fragment per Italian line, using Norton's own words
+throughout (no re-translation).
 
-### Design rationale: why extraction, not word reordering
+### Design rationale: rearrange, not extract
 
-An earlier line of experiments (the `dante-la-el` project, see
-[PRIOR_WORK.md](../PRIOR_WORK.md)) took a different approach: split Norton's
-prose into fixed 3-line (tercet) chunks, then reorder that chunk's words
-(without rewriting any of them) to fill exactly 3 output lines matching the
-Italian tercet. That approach required heavy manual correction and differed
-per AI system used (PRIOR_WORK.md "Challenges"), and PLAN.md's early design
-notes record a concrete case (Canto 1 lines 41-43) where Norton's clause
-order is fully inverted relative to the Italian tercet (43→41→42), which a
-fixed 3-in/3-out reordering forces into an unnatural split.
+`align_canto.py` and the original `align3.py` both worked by *extraction*:
+find the Norton span whose meaning matches a block of Italian lines, and
+require it to be a verbatim, contiguous prefix of the remaining text. This
+makes correctness mechanically checkable, but it structurally cannot
+reproduce a genuine Italian hyperbaton: if Norton's own word order doesn't
+follow the Italian line order, no contiguous span can be attributed
+correctly to individual lines. Canto 1 lines 41-43 is the standing example
+(see MEMO.md "Comparison against the fixed gold reference"): the Italian
+subject (`l'ora del tempo e la dolce stagione`, line 43) is *postposed*
+relative to its verb clause (lines 41-42), but Norton's English states the
+subject first ("so that **the hour of the time and the sweet season**
+were occasion of good hope to me concerning that wild beast..."). Under
+extraction, this content can only be attributed as one merged span - it
+cannot be split at Italian line boundaries without moving words.
 
-This project's algorithm instead keeps Norton's word order untouched and
-lets block length vary: some blocks are one Italian line, others span
-several, and line breaks are inserted only at block boundaries — never
-inside Norton's original word order. The payoff is that correctness becomes
-mechanically checkable (`norton_text.startswith(extracted)`) instead of
-depending on a subjective judgment of whether a reordering preserved
-meaning and vocabulary. The trade-off is Limitation 6 below: a block still
-maps N Italian lines to one contiguous span, so the exact line inside a
-multi-line block that "owns" a given phrase is underdetermined — see
-"Cross-model split comparison" under Success Metrics for a measured example.
+This pipeline instead never extracts or verbatim-matches: each stage takes
+a Norton text already known (by construction) to correspond to N Italian
+lines, and asks the LLM to *split it into exactly N fragments, rearranging
+words freely but never adding, removing, or substituting any of them*.
+Validation is the case-insensitive word multiset of the concatenated
+fragments equaling that of the input - order-independent, so a genuine
+reordering (moving "the hour of the time and the sweet season" to a
+different fragment) validates just as well as a simple cut. This mirrors
+the original `dante-la-el` project's Bard-based process (see
+[PRIOR_WORK.md](../PRIOR_WORK.md)) - the same idea previous experiments
+tried - but where that project's ad hoc reordering "required heavy manual
+correction and differed per AI system used" (MEMO.md), this pipeline adds
+two things that made it work reliably with `openai:gpt-5.6-terra`: the
+paragraph's tercet boundaries are fixed in advance (`align_ranges.py`), so
+each split only has to solve one already-scoped sub-problem, and the model
+is prompted with the Italian side *renumbered to match the requested
+output* (see "Numbered-line output" below) rather than left to infer the
+split points itself.
 
-## Two-Stage Extraction Algorithm
+## Stage 1: `align_ranges.py` (paragraph -> Italian line range)
 
-The algorithm supports two modes:
-- **Direct Comparison (default):** Uses Italian text directly as reference
-- **Translation-Based (`--translate`):** Translates Italian to modern English first
+One LLM call over the *entire* canto: given the full numbered Italian text
+and the full set of Norton paragraphs (summary paragraph excluded, numbered
+the same way throughout the pipeline), the model returns one
+`{paragraph, start_line, end_line}` entry per paragraph - no text
+extraction, just a line-range correspondence.
 
-### Mode 1: Direct Comparison (Default)
+**Validation** (`validate_ranges`, purely mechanical): paragraph numbers
+must match the expected sequence; ranges must be contiguous and in order;
+the first must start at line 1; the last must end at the canto's total line
+count. Retried up to `MAX_ATTEMPTS` (3) on failure.
 
-**Purpose:** Align using Italian text directly without intermediate translation.
+**Result (Canto 1, `openai:gpt-5.6-terra`):** all 6 paragraph ranges exact
+on the first attempt, matching a ground truth derived independently from
+`01-3.txt` (see MEMO.md "Whole-canto paragraph-range identification").
+Because this has been verified reliable, `run_models.sh` treats its output
+as a fixed input rather than regenerating it on every run - see "Files and
+running the pipeline" below.
 
-**Process:**
-1. Take Italian line(s) as input
-2. Use Italian text directly as semantic reference
-3. Search Norton's text for equivalent meaning
-4. Extract the exact text from Norton's prose
+## Stage 2: `align3.py` (paragraph -> tercet-sized group)
 
-**Advantages:**
-- Faster (one fewer LLM call per block)
-- Avoids potential translation errors
-- Works well when LLM understands both Italian and English
+For each paragraph (using the line range from stage 1), its Italian lines
+are chunked into consecutive groups of `--block-size` (default 3, i.e. a
+tercet); the final group may be shorter when the paragraph's line count
+isn't a multiple of the block size. The whole paragraph's Norton text is
+then split into one fragment per group via `split_norton_span` (see below).
 
-### Mode 2: Translation-Based (`--translate` flag)
+A paragraph whose split never validates (`MAX_ATTEMPTS` retries exhausted)
+is kept as a single merged row spanning its whole line range, rather than
+dropping text.
 
-**Measured:** worse than direct comparison with every model tested (see
-[MEMO.md](MEMO.md)); kept as an experiment switch, not recommended.
+## Stage 3: `align1.py` (tercet -> per-line)
 
-**Purpose:** Create a semantic reference point independent of Norton's literary style.
+Reads stage 2's group TSV and further splits any group spanning more than
+one Italian line into one fragment per line, via the *same*
+`split_norton_span` function - each Italian line is simply passed as its
+own one-line group. A group whose split never validates is kept merged
+(multiple Italian lines joined by `|`), same convention as stage 2.
 
-**Process:**
+## `split_norton_span`: the shared rearranging-split primitive
 
-**Stage 1: Modern Translation**
-1. Take Italian line(s) as input
-2. Translate to simple, modern English using LLM
-3. For single lines: translate individually
-4. For multi-line blocks: translate together (for enjambment cases)
-
-**Example:**
-- Italian: "Nel mezzo del cammin di nostra vita"
-- Modern: "In the middle of our life's journey"
-
-**Stage 2: Norton Text Extraction**
-1. Use modern translation as the meaning reference
-2. Search Norton's text for equivalent meaning (not word-for-word)
-3. Extract the exact text from Norton's prose
-4. Extract the span where it appears (only `--strict-prefix` asks the model
-   to start from the beginning of the paragraph)
-
-**Key Points (Both Modes):**
-- Uses structured LLM output (JSON with `italian`/`english` fields) for extraction
-- Rejects extractions whose text cannot be found verbatim in the Norton paragraph (hallucination check)
-- Applies symmetric quote stripping (only removes quotes when text is fully enclosed)
-- Restores trailing punctuation from original Norton text
-
-## Block Boundary Detection
-
-### Island Detection
-
-Determines when a block of Italian lines is complete.
-
-An accepted extraction is located in the remaining Norton paragraph text, and
-its **word offset** — how many words precede it — decides the outcome:
-
-```python
-offset_words = count_words(norton_text[:idx])   # idx = position of the span
-
-if offset_words > window_words:
-    reject                  # too far in to be plausible; costs a retry attempt
-elif offset_words > 0:
-    island                  # block incomplete: add the next Italian line
-else:
-    complete                # span starts the remaining text: finalize the block
-```
-
-**Logic:**
-
-- An "island" is a valid span with unmatched text still in front of it.
-- That leading text has to belong to a *later* Italian line, which is exactly
-  the Italian/English word-order divergence the mechanism exists to absorb.
-  Adding the next line and re-querying lets the model return a span that
-  covers both.
-- An island costs a line, not a retry attempt: the extraction succeeded, only
-  the block is unfinished.
-
-**Search window:** `window_words` (default 20, `--window-words`) bounds how far
-in a span may start. Without the bound, a span matching incidentally at the far
-end of the paragraph would be read as an island and grow the block until
-`MAX_BLOCK_LINES`, turning rejections into skipped lines. `--strict-prefix`
-sets the window to 0, which requires the span to be a strict prefix and
-reproduces the pre-fix behavior for A/B comparison.
-
-**History:** island detection was previously unreachable. Validation accepted a
-span only if `norton_text.startswith(extracted)`, so every input reaching the
-detector was already a contiguous prefix and `Island: True` occurred 0 times
-across all 8 full-canto test runs. The `#`-marker implementation that computed
-this indirectly (and mis-matched short words as substrings) was removed in
-favor of the offset comparison above. See [MEMO.md](MEMO.md) "Structural
-analysis" and [ISLAND_FIX.md](ISLAND_FIX.md) for the requirements this change
-implements.
-
-### Enjambment Handling
-
-A block grows to N+1 lines by either of two paths:
-
-**Extraction failure** — no attempt produced a valid span:
-1. Return `None` to signal more context needed
-2. Automatically retry with N+1 lines
-3. Continue until successful extraction or `MAX_BLOCK_LINES`
-
-**Island** — a valid span was found, but text precedes it:
-1. Accept the span but do not finalize the block
-2. Add the next Italian line and re-query against the same paragraph text
-3. Continue until a span starts at offset 0 or `MAX_BLOCK_LINES`
-
-**Example:**
-- Line 4 alone: "Ahi quanto a dir qual era è cosa dura" (extraction fails)
-- Lines 4-5: "Ahi quanto a dir... / esta selva selvaggia..." (extraction succeeds)
-- Result: 2 Italian lines → 1 English sentence
-
-## Validation
-
-Validation relies on mechanical checks against the Norton source text rather than a separate LLM judgment call.
-
-### Hard Constraints
-
-1. **Existence Check (anti-hallucination):**
-   - Extracted text must be found verbatim (case-insensitive) within the Norton paragraph
-   - Rejects fabricated or paraphrased extractions
-
-2. **Length Ratio Check:**
-   - If extracted word count > 2.0 × Italian word count → reject
-   - Prevents over-extraction of adjacent lines
-
-3. **Position Check (search window):**
-   - The span must start no more than `window_words` words into the remaining
-     Norton text; beyond that it is rejected
-   - Within the window, the offset is not a pass/fail signal but a block
-     boundary signal (see Island Detection above)
-   - Punctuation-only text preceding a span does not count as an offset, since
-     `count_words()` counts word tokens only
-
-Each of the up to 3 retries re-runs the extraction prompt from scratch; there is no separate semantic-equivalence validation step. An island does not consume a retry attempt.
-
-## Quote Stripping
-
-**Symmetric Quote Removal:**
-```python
-extracted = result.get("english", "").strip()
-if (extracted.startswith('"') and extracted.endswith('"')) or \
-   (extracted.startswith("'") and extracted.endswith("'")):
-    extracted = extracted[1:-1]
-```
-
-**Rules:**
-- Only removes quotes when text is fully enclosed
-- Preserves internal apostrophes (don't, it's)
-- Preserves exclamation marks (Ah!)
-
-## Punctuation Restoration
-
-Restores trailing punctuation from original Norton text. By this point `idx`
-is already known (the existence check above found `extracted` in
-`norton_text`), so no `-1` guard is needed:
+Both stage 2 and stage 3 call the same function in `align3.py`, generic
+over the group size (one Italian line, or several):
 
 ```python
-end_pos = idx + len(extracted)
-if end_pos < len(norton_text):
-    next_char = norton_text[end_pos]
-    if next_char in ',.;:!?' and not extracted.endswith(next_char):
-        extracted = extracted + next_char
+def split_norton_span(llm, italian_groups: List[List[ItalianLine]],
+                      matched_text: str, start_num: int = 1) -> List[str] | None
 ```
 
-This ensures output matches original formatting (e.g., "dark wood," not "dark wood").
+### Numbered-line output, not structured JSON
 
-## Failure Recovery
-
-If a block accumulates more than 6 Italian lines (`MAX_BLOCK_LINES`) without
-a successful extraction, those line(s) are skipped with no output
-("Block exceeded" in the log), and the paragraph's remaining text is
-preserved: alignment continues with the next Italian line(s) against the
-same paragraph. `italian_idx` therefore always advances to the canto's end,
-but lines consumed by skipped blocks produce no output — hence "coverage"
-(line-based completion) is tracked separately in [MEMO.md](MEMO.md).
-
-Note: an earlier re-sync mechanism (`find_matching_italian_line`, which
-jumped to the next Norton paragraph and re-found the Italian position) was
-removed as unreachable — see "Bug history" in [MEMO.md](MEMO.md).
-
-## Processing Flow
+Earlier versions of this pipeline requested structured JSON output
+(`{"lines": [...]}`). This was replaced with plain numbered-line text: the
+Italian side is shown renumbered by group (not by original per-paragraph
+line number), and the model is asked to return exactly that many lines,
+each starting with its group's number:
 
 ```
-For each Norton paragraph:
-    For each Italian line:
-        Add line to current block
-
-        (--translate only) Stage 1: Translate block to modern English
-        Stage 2: Extract corresponding Norton text (structured JSON output)
-
-        Validate extraction:
-            - Non-empty?
-            - Found verbatim in Norton text? (existence check)
-            - Length ratio < 2.0?
-            - Word offset <= window_words?
-
-        If validation fails:
-            Retry (up to 3 attempts), then return None → try with more lines
-
-        If accepted with offset > 0:
-            Island → add the next Italian line and re-query (no retry consumed)
-
-        If accepted with offset == 0:
-            Finalize the block; consume the span from the paragraph text
-
-        If block exceeds 6 lines with no success:
-            Skip these line(s) (no output); retry next line(s)
-            against the same paragraph
+Italian line groups:
+1 Nel mezzo del cammin di nostra vita|mi ritrovai per una selva oscura,|ché la diritta via era smarrita.
+2 Ahi quanto a dir qual era è cosa dura|esta selva selvaggia e aspra e forte|che nel pensier rinova la paura!
+3 Tant' è amara che poco è più morte;|ma per trattar del ben ch'i' vi trovai,|dirò de l'altre cose ch'i' v'ho scorte.
 ```
 
-## Success Metrics
+The requested output mirrors this 1:1 (`"1 <fragment>"`, `"2 <fragment>"`,
+...). Making the target grouping explicit through matching numbers - rather
+than leaving the model to infer split points from prose instructions alone
+- was the change that got a real word move to happen reliably: with the
+old JSON-schema prompt, `openai:gpt-5.6-terra` repeatedly failed to move
+"the hour of the time and the sweet season" out of its original position
+for the lines 41-43 hyperbaton (a "different but still contiguous" cut
+point instead); with numbered-line prompting, it produced the fully correct
+split on the first real run - see "Results" below.
 
-Coverage — Italian lines that ended up in an output block, out of the canto
-total — is reported by the tool itself at the end of a run and written to the
-log. It is the meaningful completion metric: a block that fails after
-`MAX_BLOCK_LINES` is skipped with no output, so reaching the last Italian line
-does not imply every line was covered.
+`parse_numbered_lines` parses the response back: it requires the numbers
+found to form exactly `start_num..start_num+n-1`, in order, with no gaps,
+duplicates, or extra lines - any deviation returns `None` and the whole
+attempt is retried, rather than trying to recover a partial match.
 
-Full-canto results across models and modes are tracked in
-[MEMO.md](MEMO.md). Key findings from Inferno Canto 1 (136 lines):
+### Serial numbering (`start_num`)
 
-- Direct comparison (default) outperforms `--translate` with every model
-  tested.
-- Under `--strict-prefix` (the pre-fix baseline), coverage ranges from 19%
-  (local 14B model) to 100% (top-tier models).
-- Under the default search window (measured in MEMO.md "Results:
-  search-window mode"), `gemma-4-31b-it` reaches 100% coverage (up from
-  68%), `gpt-5.6-luna`/`gpt-5.6-terra` hold 100%, and `ministral-3:14b`
-  regresses (47% → 23%) due to hallucination-driven block growth under
-  islands — a capability limit, not a tunable window setting (see
-  [ISLAND_FIX.md](ISLAND_FIX.md) section 6 item 3). `ministral-3:14b` is
-  excluded from `run_models.sh`'s benchmark set as a result.
+Numbering does not reset to 1 for every call - callers thread a running
+serial number through so cross-call log output stays traceable and,
+qualitatively, so the model always sees a number matching the item's actual
+position rather than a repeating 1..3:
+- **`align3.py`** maintains a canto-wide running counter across paragraphs
+  (paragraph 2's groups are numbered 1-9, paragraph 3's continue at 10-12,
+  etc. for Canto 1), incremented by each paragraph's group count regardless
+  of whether a split call was actually made.
+- **`align1.py`** needs no separate counter: each group is a single Italian
+  line, so its own real (canto-wide) `line_num` is used directly as
+  `start_num`.
 
-### Cross-model split comparison
+### Validation
 
-Comparing the final block boundaries chosen by `gemma4`, `luna`, and `terra`
-on Canto 1 (window mode) shows the concatenated Norton text is essentially
-identical across all three (2 trailing-punctuation differences in 136
-lines), confirming there is one effectively unique underlying text
-alignment. But the exact line each model attributes a given phrase to
-differs at several points — e.g. for lines 42-44, `terra` attributes "He
-seemed to be coming against me, with head high..." to line 42 alone, while
-`gemma4`/`luna` attribute it jointly to lines 42-43. This is Limitation 6 /
-Finding 3 (MEMO.md) made concrete: block-level extraction fixes *what* text
-belongs to a block but leaves *which line inside it* underdetermined, so
-different models (and even different runs) can split the same block content
-at different points without either being "wrong."
+1. Response parses into exactly `n` numbered lines (`parse_numbered_lines`).
+2. No fragment is empty or whitespace-only (would otherwise contribute zero
+   words to the check below and pass vacuously).
+3. The case-insensitive word multiset (`\w+` tokens) of the concatenated
+   fragments equals that of the input text exactly - nothing added,
+   dropped, or substituted; only reordered and re-split.
+
+Up to `MAX_ATTEMPTS` (3) retries on any failure; if none validates, the
+caller keeps the whole span as one merged row (never drops content).
+
+### No automatic punctuation restoration
+
+An earlier version added a mechanical post-split punctuation-restoration
+pass (reattaching sentence punctuation dropped at a fragment boundary,
+based on searching the source text). It was removed: after investigation
+(comparing several boundary "mismatches" against the actual Italian and
+Norton source text - see conversation history / commit log around this
+change), most apparent punctuation problems turned out not to be pipeline
+bugs at all (one was gold itself carrying an edited period absent from
+Norton's actual source; em-dash placement across two words fused with no
+surrounding space is inherently ambiguous either way), and the mechanism's
+own duplicate-detection logic was a source of a real bug during
+development. Punctuation is left exactly as the model produces it; the
+word-multiset check remains the only mechanical guarantee.
+
+## Output Format
+
+Every stage writes a log (`-o/--output`) and a companion TSV alongside it -
+same base name, `.tsv` extension (e.g. `inferno-01-3.log` /
+`inferno-01-3.tsv`), not `<name>.log.tsv`.
+
+- **`align_ranges.py`**: `paragraph<TAB>start_line<TAB>end_line`, one row
+  per Norton paragraph.
+- **`align3.py`**: `italian_lines<TAB>norton_text`, one row per tercet-sized
+  group; `italian_lines` is `|`-joined when the group spans more than one
+  Italian line (always for a merge fallback; possible for the final partial
+  group of a paragraph).
+- **`align1.py`**: same shape, but one row per Italian line in the normal
+  case (a `|`-joined multi-line row only where a group's split failed and
+  was kept merged).
+
+## Files and running the pipeline
+
+```bash
+# Stage 1 (once per canto - its ranges TSV is a fixed input to the rest)
+uv run alignment/align_ranges.py 1 \
+    -o alignment/output/inferno-01-ranges.log --model openai:gpt-5.6-terra
+
+# Stages 2-3 together
+alignment/run_models.sh 1
+# equivalent to:
+uv run alignment/align3.py 1 -i alignment/output/inferno-01-ranges.tsv \
+    -o alignment/output/inferno-01-3.log --model openai:gpt-5.6-terra
+uv run alignment/align1.py 1 -i alignment/output/inferno-01-3.tsv \
+    -o alignment/output/inferno-01-1.log --model openai:gpt-5.6-terra
+```
+
+`run_models.sh` does not run stage 1 itself (see its header comment): the
+ranges TSV is treated as a fixed, already-verified input, not something to
+regenerate on every run. `--test` (stages 2/3 only; stage 1 makes a single
+whole-canto call already) processes just the first paragraph/group, for a
+quick local smoke test.
+
+## Results (Canto 1, `openai:gpt-5.6-terra`)
+
+- **Stage 1**: 6/6 paragraph ranges exact (see above).
+- **Stage 2 vs. `01-3.txt`** (46-row tercet-level gold): 45/46 rows exact.
+  The one remaining difference (rows 14-15, the lines 41-43 hyperbaton) has
+  fully matching content and word order - the model *did* move "the hour of
+  the time and the sweet season" into its own group, exactly as gold does;
+  the only remaining difference is a punctuation/capitalization style
+  choice at that internal boundary (comma+lowercase vs. period+capital),
+  judged not worth normalizing away (see "No automatic punctuation
+  restoration" above).
+- **Stage 3**: 136/136 rows, 0 merged (every group split successfully on
+  this run) - up from the previous run's 134/136 with 1 merged group.
+  Spot-checked against `01-1.txt` (per-line gold): the same hyperbaton
+  region (lines 42-44) matches content and word order exactly; remaining
+  differences elsewhere are mostly quote-mark style (`"..."` vs `"…"`,
+  unrelated to content) plus a few alternative but content-preserving
+  word-order choices in dialogue-heavy passages, not evaluated further.
+
+Only Canto 1 has been tested to date. Longer cantos, and stage 1's
+robustness at larger scale, remain open (see MEMO.md "Open questions").
 
 ## Configuration
 
-- **LLM Model:** Ollama (ministral-3:14b) by default. Note: this model is
-  excluded from `run_models.sh`'s benchmark comparisons (see Success
-  Metrics above) since the search-window change regressed it; it remains
-  the tool's default only as a free local option, not as a recommendation.
-- **Temperature:** 1.0
-- **Max Retries:** 3 per extraction attempt
-- **Length Ratio Threshold:** 2.0
-- **Search Window:** 20 words (`--window-words`); 0 (`--strict-prefix`)
-  requires the span to be a strict prefix, reproducing the pre-fix baseline
-- **Max Block Lines:** 6 (beyond this the block's line(s) are skipped with
-  no output; the paragraph text is preserved for the next line(s))
-- **Default Mode:** Direct comparison (Italian text used directly)
-- **Translation Mode:** Optional `--translate` flag; measured worse than
-  direct comparison with all models tested (see MEMO.md), kept as an
-  experiment switch
+- **LLM model**: no default reflects a recommendation - benchmark model is
+  `openai:gpt-5.6-terra` throughout (see MEMO.md's model-selection
+  history); each script's `--model` flag defaults to `ollama:ministral-3:14b`
+  only as a free local fallback.
+- **Temperature**: 1.0.
+- **Max attempts**: 3 per split/range-identification call.
+- **Block size** (`align3.py --block-size`): 3 Italian lines (a tercet) by
+  default.
 
 ## Limitations
 
-1. Depends on LLM quality for translation and extraction
-2. May struggle with highly compressed or expanded translations
-3. Requires sufficient context (paragraph-level alignment)
-4. Computational cost: Multiple LLM calls per line
-5. Only the first 500 characters of the remaining paragraph are shown to the
-   model, so a correct span past that cutoff is unreachable
-6. A block still maps N Italian lines to one contiguous Norton span; the
-   correspondence *inside* a multi-line block is not resolved (see MEMO.md
-   Finding 3)
+1. Depends on LLM quality and instruction-following for the rearranging
+   split - a weaker local model (`qwen3.6`) struggles with larger group
+   counts in a single call (numbering drifts, duplicates/gaps appear) and
+   falls back to merged rows more often; see stage 2/3's merge-fallback
+   coverage in a given run's log.
+2. Word-multiset validation cannot catch a split that is grammatically
+   broken or attributes words to a plausible-but-wrong fragment while still
+   using the same words in the same relative order - only content
+   preservation is checked, not correctness of the split itself.
+3. No punctuation-correctness guarantee (see "No automatic punctuation
+   restoration" above) - a fragment boundary may carry punctuation that
+   reads oddly, though content is never lost.
+4. Stage 1's whole-canto single call is untested on cantos much longer than
+   Canto 1's 136 lines; the original concern that motivated a possible
+   segment-based fallback (see MEMO.md) has not been re-examined since.
 
 ## Future Improvements
 
-1. **Caching:** Cache modern translations to avoid repeated translations
-2. **Parallel Processing:** Process multiple paragraphs simultaneously
-3. **Human Review Interface:** Flag uncertain alignments for manual review
-4. **Alternative Models:** Test with larger models (70B+) for better accuracy
-5. ~~Re-measure the baseline~~ — done, see "Success Metrics" above and
-   MEMO.md "Results: search-window mode".
-6. **Line-level correspondence:** Resolve alignment inside multi-line blocks
-   (embedding-based DP or paragraph-level correspondence extraction — see
-   MEMO.md "Redesign directions"). One concrete candidate under discussion:
-   a two-stage approach mirroring the original `dante-la-el` method — first
-   fix coarse (tercet- or sentence-level) block boundaries, which appear to
-   be far less ambiguous than per-line boundaries, then reorder words
-   *within* that fixed span only, bounding the reordering-validation problem
-   that caused the original approach to be abandoned (see "Design
-   rationale" above).
-
-## Files
-
-- `alignment/align_canto.py` - Main implementation
-- `alignment/output/` - Log files and results
-- `tokenize/inferno/` - Tokenized Italian text
-- `en-norton/inferno/` - Norton English translation
+1. Test the pipeline on more cantos, especially longer ones, to validate
+   stage 1's whole-canto call at scale.
+2. Consider a mechanical or LLM-based grammaticality check for split
+   fragments, to catch cases like a fragment ending mid-clause on a
+   conjunction (an actual failure mode observed once during development,
+   from a weaker/unlucky sample - see conversation history).
+3. Re-evaluate whether normalizing punctuation/capitalization at a
+   rearranged boundary (comma+lowercase vs. period+capital, e.g.) is worth
+   revisiting with a narrower, better-tested mechanism than the one removed
+   during development.
 
 ## References
 
-- ISLAND_FIX.md - Requirements for the search-window / island change
-- PLAN.md - Original implementation planning document
-- PRIOR_WORK.md - Analysis of previous alignment attempts
+- [MEMO.md](MEMO.md) - full experimental history: model comparisons,
+  the superseded `align_canto.py` algorithm (condensed), the two-stage
+  extraction-based `align3.py` and its gold-comparison results, whole-canto
+  range identification testing, and this pipeline's development notes.
+- [PRIOR_WORK.md](../PRIOR_WORK.md) - the original `dante-la-el` /
+  Bard-based tercet-then-line reordering process this pipeline mirrors.
+- [ISLAND_FIX.md](ISLAND_FIX.md) - island/search-window design notes for
+  the superseded `align_canto.py`.

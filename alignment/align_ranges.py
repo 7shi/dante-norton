@@ -21,17 +21,15 @@ canto is too large for reliable output, segments become the fallback
 chunking mechanism for the same range-identification task.
 """
 
-import re
 import sys
-import json
 from pathlib import Path
 from typing import List
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from dante_norton import Canto, LLMClient
-from align3 import ItalianLine, load_italian_lines, parse_json_object
+from dante_norton import LLMClient
+from align3 import ItalianLine, load_italian_lines, load_norton_paragraphs, parse_json_object
 
 
 # Retries for a range mapping that fails mechanical validation
@@ -63,25 +61,6 @@ def log_print(*args, **kwargs):
 def notify(*args, **kwargs):
     print(*args, **kwargs, flush=True)
     log_print(*args, **kwargs)
-
-
-def load_norton_paragraphs(filepath: str) -> List[tuple[int, str]]:
-    """
-    Load Norton paragraphs as (paragraph_num, text) pairs, using the same
-    numbering and summary-paragraph skip as align3.py's align_canto loop.
-    """
-    with open(filepath, 'r', encoding='utf-8') as f:
-        norton_canto = Canto(f.read())
-
-    paragraphs = []
-    for para_num, (text, _) in enumerate(norton_canto.lines, 1):
-        if not text.strip():
-            continue
-        if para_num == 1:
-            continue  # summary paragraph, not part of the translation
-        clean_text = re.sub(r'\[\d+\]', '', text)
-        paragraphs.append((para_num, clean_text))
-    return paragraphs
 
 
 def validate_ranges(ranges: List[ParagraphRange], paragraphs: List[tuple[int, str]],
@@ -182,7 +161,8 @@ def main():
         description='Identify Italian line ranges per Norton paragraph (whole-canto, single LLM call)')
     parser.add_argument('canto_num', type=int, help='Canto number (e.g., 1 for Canto I)')
     parser.add_argument('-o', '--output', required=True,
-                        help='Log file path (required); a companion TSV is written at <output>.tsv')
+                        help='Log file path (required); a companion TSV is written alongside it '
+                             '(same name, .tsv extension)')
     parser.add_argument('--model', default='ollama:ministral-3:14b', help='LLM model to use')
     parser.add_argument('--temperature', type=float, default=1.0, help='LLM temperature (default: 1.0)')
     parser.add_argument('--think', action='store_true', help='Enable LLM thinking (disabled by default)')
@@ -192,7 +172,7 @@ def main():
     italian_file = f"tokenize/inferno/{args.canto_num:02d}.txt"
     norton_file = f"en-norton/inferno/{args.canto_num:02d}.txt"
     log_file_path = args.output
-    tsv_file_path = args.output + ".tsv"
+    tsv_file_path = str(Path(args.output).with_suffix('.tsv'))
 
     print(f"Identifying paragraph ranges for Canto {args.canto_num} (whole-canto, single call)...")
 

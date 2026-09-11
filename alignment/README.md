@@ -4,124 +4,104 @@ Alignment scripts for the Italian original text and Norton's English translation
 
 ## Overview
 
-Two scripts align Dante's Italian lines to Norton's English prose:
+The current, recommended approach is a three-stage pipeline that
+hierarchically decomposes each Norton paragraph down to one row per Italian
+line, never extracting or verbatim-matching text - each stage only
+rearranges words already known to belong to a given span, validated by
+word-multiset equality:
+
+- **`align_ranges.py`**: one LLM call over the whole canto identifies, for
+  each Norton paragraph, the range of Italian lines it corresponds to.
+- **`align3.py`**: reads that ranges TSV and splits each paragraph's Norton
+  text into tercet-sized (3-line, by default) groups.
+- **`align1.py`**: reads `align3.py`'s output and further splits any
+  multi-line group into one fragment per Italian line.
+
+See [ALGORITHM.md](ALGORITHM.md) for the full algorithm description,
+numbered-line output format, and Canto 1 results (near-exact match against
+both fixed gold references).
+
+Two earlier, superseded scripts remain for reference:
 
 - **`align_canto.py`** (single-stage, extraction-only): for each Norton
   paragraph, Italian lines are added to a block one at a time and an LLM
-  extracts the corresponding Norton span, with island detection via a search
-  window to find block boundaries. See [ALGORITHM.md](ALGORITHM.md) for full
-  algorithm details and [ISLAND_FIX.md](ISLAND_FIX.md) for the requirements
-  behind the island/search-window design.
-- **`align3.py`** (two-stage, tercet-first, current recommendation): stage 1
-  extracts a whole tercet (3 Italian lines) at once, with a fixed block size
-  and no growth mechanism; stage 2 then splits that fixed Norton span into
-  one fragment per Italian line, rearranging words but never substituting
-  them. See [MEMO.md](MEMO.md) "Two-stage, tercet-first alignment" for the
-  design rationale and gold-reference comparison results that motivated it.
+  extracts the corresponding Norton span, with island detection via a
+  search window to find block boundaries. See [MEMO.md](MEMO.md) (algorithm
+  summary near the top) and [ISLAND_FIX.md](ISLAND_FIX.md).
+- The original **`align3.py`** (two-stage, extraction-based tercet-first,
+  now replaced): stage 1 extracted a whole tercet at once with a fixed
+  block size, stage 2 split that fixed span into one fragment per Italian
+  line. See [MEMO.md](MEMO.md) "Two-stage, tercet-first alignment" for the
+  design rationale and gold-comparison results that motivated moving away
+  from extraction entirely.
 
-[MEMO.md](MEMO.md) has the full comparison of results across LLM backends
-and between the two scripts. As of that comparison, `openai:gpt-5.6-terra`
-is the sole benchmark model going forward (see MEMO.md's model-selection
-decision) — `ministral-3:14b`, `qwen3.6`, `gemma-4-31b-it`, and
-`gpt-5.6-luna` were all tried and dropped for documented reasons.
+[MEMO.md](MEMO.md) has the full experimental history across LLM backends.
+`openai:gpt-5.6-terra` is the sole benchmark model going forward (see
+MEMO.md's model-selection decision) - `ministral-3:14b`, `qwen3.6`,
+`gemma-4-31b-it`, and `gpt-5.6-luna` were all tried and dropped for
+documented reasons.
 
 Two fixed gold references for Canto 1, `01-1.txt` (per-line) and `01-3.txt`
-(per-tercet), are also present in this directory — see "Reference Data"
+(per-tercet), are also present in this directory - see "Reference Data"
 below.
 
 ## Usage
 
-### Basic Execution (align_canto.py)
+### The current pipeline
 
 ```bash
-# Process all of Canto I
-uv run alignment/align_canto.py 1
+# Stage 1: identify paragraph -> Italian line ranges (once per canto; its
+# output is treated as a fixed input to the rest of the pipeline, not
+# regenerated on every run - see ALGORITHM.md)
+uv run alignment/align_ranges.py 1 \
+    -o alignment/output/inferno-01-ranges.log --model openai:gpt-5.6-terra
 
-# Process another Canto
-uv run alignment/align_canto.py 2
-```
-
-### Options
-
-```bash
-# Limit the number of Italian lines processed (default: unlimited)
-uv run alignment/align_canto.py 1 --max-lines 50
-
-# Specify LLM model (default: ollama:ministral-3:14b)
-uv run alignment/align_canto.py 1 --model google:gemini-2.5-flash
-
-# Adjust temperature (default: 1.0)
-uv run alignment/align_canto.py 1 --temperature 0.3
-
-# Enable thinking (disabled by default)
-uv run alignment/align_canto.py 1 --think
-
-# Set the search window: how many words of the remaining Norton text may
-# precede an accepted span before it is rejected (default: 20)
-uv run alignment/align_canto.py 1 --window-words 30
-
-# Baseline mode: require each span to start at the beginning of the
-# remaining text (equivalent to --window-words 0). Reproduces the behavior
-# measured in MEMO.md, for A/B comparison.
-uv run alignment/align_canto.py 1 --strict-prefix
-
-# Translate Italian to modern English before matching, instead of
-# comparing the Italian text directly (default: direct comparison)
-# NOT recommended: benchmarked worse than direct comparison with
-# every model tested (see MEMO.md)
-uv run alignment/align_canto.py 1 --translate
-```
-
-The `--model` value is passed through to `llm7shi`; use an `ollama:`, `google:`,
-or `openai:` prefix to select the backend. Cloud backends need the
-corresponding API key set in the environment (e.g. `GEMINI_API_KEY`).
-
-Note on `--window-words` / `--strict-prefix`: a span found within the window
-but not at the very beginning is an *island* — the text in front of it belongs
-to a later Italian line, so the current block is extended by one line and
-re-queried rather than the extraction being thrown away. Setting the window to
-0 disables this and restores the strict prefix-only behavior that the MEMO.md
-numbers were measured with. Widening the window too far converts rejections
-into oversized blocks that get skipped, so check the reported offsets in the
-log before raising it.
-
-Note on `--translate`: it adds an LLM translation call per query, and on
-Inferno Canto 1 it reduced coverage for the weaker models (e.g. 47% → 19%
-for `ministral-3:14b`) while giving the stronger models no benefit. Kept as
-an experiment switch; use the default direct comparison. See
-[MEMO.md](MEMO.md) for the measured numbers.
-
-### Two-stage Execution (align3.py)
-
-```bash
-# Process Canto I; -o is required (no default log path)
-uv run alignment/align3.py 1 -o alignment/output/canto_01-terra-align3.log --model openai:gpt-5.6-terra
-
-# Number of Italian lines per fixed-size stage-1 chunk (default: 3, i.e. a tercet)
-uv run alignment/align3.py 1 -o out.log --block-size 3
-
-# --model, --max-lines, --temperature, --think, --translate work the same as align_canto.py
-```
-
-Unlike `align_canto.py`, there is no `--window-words` / `--strict-prefix`:
-stage 1's chunk size is fixed (`--block-size`) with no growth mechanism, so a
-chunk that fails to match at the exact start of the remaining text is
-skipped outright rather than extended (see MEMO.md for why). `-o` sets the
-log path; two companion TSVs are written alongside it automatically (see
-Output below).
-
-### Batch runs across models (run_models.sh)
-
-```bash
-# Run align3.py over Canto 1 with every model in run_models.sh's MODELS list
-# (currently openai:gpt-5.6-terra only - see MEMO.md's model-selection
-# decision), skipping any model whose non-empty .log.tsv already exists,
-# then print a summary table
+# Stages 2-3: paragraph -> tercet -> line, via run_models.sh
 alignment/run_models.sh 1
 ```
 
-Logs land at `alignment/output/canto_NN-<short-name>-align3.log`. Edit the
-`MODELS` array in the script to benchmark additional models.
+`run_models.sh [canto] [-- extra args...]` runs `align3.py` then `align1.py`
+for `openai:gpt-5.6-terra`, skipping any stage whose non-empty output TSV
+already exists (so a re-run only fills in what's missing), then prints a
+coverage summary. Extra args (e.g. `--block-size`, `--test`) are forwarded
+to both stages.
+
+To run a stage directly:
+
+```bash
+# align3.py: -i (ranges TSV) and -o (log path) are both required
+uv run alignment/align3.py 1 -i alignment/output/inferno-01-ranges.tsv \
+    -o alignment/output/inferno-01-3.log --model openai:gpt-5.6-terra
+
+# align1.py: -i (align3.py's group TSV) and -o are both required
+uv run alignment/align1.py 1 -i alignment/output/inferno-01-3.tsv \
+    -o alignment/output/inferno-01-1.log --model openai:gpt-5.6-terra
+
+# Both accept: --model, --temperature, --think, --test (process only the
+# first paragraph/group, for a quick local smoke test)
+# align3.py additionally accepts --block-size (default: 3)
+```
+
+The `--model` value is passed through to `llm7shi`; use an `ollama:`,
+`google:`, or `openai:` prefix to select the backend. Cloud backends need
+the corresponding API key set in the environment.
+
+### Legacy: `align_canto.py` (single-stage, extraction-only)
+
+```bash
+uv run alignment/align_canto.py 1
+uv run alignment/align_canto.py 1 --max-lines 50
+uv run alignment/align_canto.py 1 --model google:gemini-2.5-flash
+uv run alignment/align_canto.py 1 --temperature 0.3
+uv run alignment/align_canto.py 1 --think
+uv run alignment/align_canto.py 1 --window-words 30
+uv run alignment/align_canto.py 1 --strict-prefix
+uv run alignment/align_canto.py 1 --translate  # not recommended, see MEMO.md
+```
+
+See MEMO.md's `align_canto.py` algorithm summary for what `--window-words`
+/ `--strict-prefix` / `--translate` do; this script is kept for reference
+but is not the recommended path.
 
 ## Reference Data
 
@@ -129,65 +109,40 @@ Logs land at `alignment/output/canto_NN-<short-name>-align3.log`. Edit the
 prose rearranged to exactly 136 lines (one per Italian line), preserving
 Norton's wording while reordering words to match Dante's line structure.
 `01-3.txt` is the intermediate, 46-line tercet-level version from the same
-source (line breaks only, no word reordering) — used to validate `align3.py`
-stage 1's coarse extraction against a fixed reference at the same
-granularity. Both are carried over from the `dante-la-el` project's Bard
-experiments
-(https://github.com/7shi/dante-la-el/tree/main/Inferno/Bard/en-norton) — see
+source (line breaks only, mostly no word reordering - two spots were
+hand-corrected during this pipeline's development to reflect a genuine
+Italian hyperbaton, see ALGORITHM.md "Design rationale"). Both are carried
+over from the `dante-la-el` project's Bard experiments
+(https://github.com/7shi/dante-la-el/tree/main/Inferno/Bard/en-norton) - see
 [PRIOR_WORK.md](../PRIOR_WORK.md) for how they were produced (Bard's own
 two-stage process: tercet-level segmentation, then per-line reordering with
-no word substitution — the same two stages `align3.py` automates) and
-[ALGORITHM.md](ALGORITHM.md) "Design rationale" for why `align_canto.py`
-does not attempt that reordering step itself.
+no word substitution - the same two stages the current pipeline automates,
+this time reliably) and [ALGORITHM.md](ALGORITHM.md) for the current
+pipeline's results against both.
 
 ## Output
 
-`align_canto.py` writes to `alignment/output/canto_XX.log`, containing:
+Every script in the current pipeline writes a log (`-o/--output`) and a
+companion TSV alongside it - same base name, `.tsv` extension (e.g.
+`inferno-01-3.log` / `inferno-01-3.tsv`):
 
-- The full processing log (per-line progress, retries, rejections)
-- Detailed Italian + English block listing
-- Norton English text with line breaks at block boundaries
-- Total block count
-- Coverage: Italian lines that ended up in an output block, out of the canto
-  total. Lines in a block that failed after `MAX_BLOCK_LINES` produce no
-  output, so this - not how far the run got - is the completion metric.
+- **`align_ranges.py`**: `paragraph<TAB>start_line<TAB>end_line`, one row
+  per Norton paragraph.
+- **`align3.py`**: `italian_lines<TAB>norton_text`, one row per tercet-sized
+  group (`italian_lines` is `|`-joined when the group spans more than one
+  line). Comparable 1:1 by position against `01-3.txt`.
+- **`align1.py`**: same shape, one row per Italian line in the normal case
+  (a `|`-joined multi-line row only where a group's split failed and was
+  kept merged). Comparable against `01-1.txt`.
 
-`align3.py` writes to the log path given by `-o` (same kind of processing
-log, covering both stages), plus two companion TSVs (Italian text, tab,
-Norton fragment; a row whose Italian column is `|`-joined spans multiple
-Italian lines):
+Each log contains the full processing trace (per-paragraph/group progress,
+retries, rejections), a final detailed Italian+English listing, and summary
+counts (total rows/groups, how many were kept merged, coverage).
 
-- `<output>.stage1.tsv` — one row per stage-1 (coarse, tercet-sized) block,
-  before decomposition. Comparable 1:1 by position against `01-3.txt`.
-- `<output>.tsv` — the final per-line rows after stage 2. A row still spans
-  multiple Italian lines only where stage 2's split never validated (see
-  "Rows still merged after stage 2" in the log); otherwise it is one row per
-  Italian line, comparable against `01-1.txt`.
+`align_canto.py` writes to `alignment/output/canto_XX.log` instead - see
+MEMO.md for its log format.
 
-Progress and errors are also printed to the console as either script runs.
-
-## Algorithm
-
-**align_canto.py**: for each Norton paragraph, Italian lines are added to a
-block one at a time; the LLM is asked to extract the corresponding Norton
-span (as structured JSON), which is validated with hard, mechanical checks
-(non-empty, must appear verbatim in the Norton text, length ratio, within
-the search window) rather than a separate LLM judgment call. The span's word
-offset in the remaining text then decides the block boundary: offset 0
-completes the block, a larger offset within the window is an island and
-extends the block by one line. See [ALGORITHM.md](ALGORITHM.md) for the full
-description, including failure handling and configuration constants.
-
-**align3.py**: stage 1 asks for a whole tercet's Norton span at once (a
-fixed `--block-size`-line chunk, no growth on failure - a failing chunk is
-skipped, not extended, unlike align_canto.py's island mechanism). Stage 2
-then asks a second LLM call to split that fixed span into one fragment per
-Italian line, validated mechanically (fragment count, no empty fragment, and
-the concatenated fragments' word multiset must equal the input span's
-exactly); a block whose split never validates is kept as one merged row
-rather than dropping text. See [MEMO.md](MEMO.md) "Two-stage, tercet-first
-alignment" for the full rationale and results; `ALGORITHM.md` documents
-align_canto.py's algorithm only, not yet align3.py's.
+Progress and errors are also printed to the console as any script runs.
 
 ## Requirements
 
@@ -199,11 +154,20 @@ align_canto.py's algorithm only, not yet align3.py's.
 
 ## Troubleshooting
 
-### Matching failures
+### Splits failing / falling back to merged rows
 
-Backend choice matters more than any flag here — see
-[MEMO.md](MEMO.md) for measured coverage differences between models on the
-same canto. If a local/small model is struggling:
+Backend choice matters more than any flag here - see [MEMO.md](MEMO.md) for
+measured differences between models. `align3.py`/`align1.py` have no
+window/island to tune; check "Paragraphs/Groups kept merged" in the log -
+a high count means the model is struggling to produce a valid numbered
+split for that canto, which was the deciding factor in dropping `qwen3.6`
+from the benchmark set once the pipeline needed 6+ groups in a single call
+(see MEMO.md).
+
+### `align_canto.py` matching failures
+
+See [MEMO.md](MEMO.md) for measured coverage differences between models on
+the same canto. If a local/small model is struggling:
 
 - Try a larger or cloud-hosted model
 - Enable thinking with `--think` flag (may improve accuracy but is slower)
@@ -211,9 +175,3 @@ same canto. If a local/small model is struggling:
 - Check the logged offsets: many rejections with "Offset N words exceeds
   window" mean `--window-words` is too tight, while many "Block exceeded"
   warnings alongside island events mean it is too loose
-
-For `align3.py`, there is no window/island to tune; a failing stage-1 chunk
-is simply skipped. Check "Rows still merged after stage 2" in the log
-instead - a high count means stage 2's word-level splitting is struggling
-for that model, which was the deciding factor in dropping `qwen3.6` from
-the benchmark set (see MEMO.md).

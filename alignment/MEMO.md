@@ -13,6 +13,107 @@ remaining text and jumping to the next one (`find_matching_italian_line` /
 resync-to-next-paragraph was removed as it's no longer reachable). See "Bug
 history" below for what each fix addressed and which model exposed it.
 
+## `align_canto.py`: single-stage extraction algorithm (historical)
+
+**Superseded** by the paragraph -> tercet -> line rearranging pipeline
+(`align_ranges.py` + `align3.py` + `align1.py`) documented in the current
+[ALGORITHM.md](ALGORITHM.md). This section preserves, in condensed form,
+the mechanics that were previously described there in full, since
+ALGORITHM.md now documents only the current pipeline.
+
+**Design rationale: extraction, not word reordering.** An earlier line of
+experiments (the `dante-la-el` project, see [PRIOR_WORK.md](../PRIOR_WORK.md))
+split Norton's prose into fixed 3-line (tercet) chunks, then reordered that
+chunk's words (without rewriting any of them) to fill exactly 3 output lines
+matching the Italian tercet. That approach required heavy manual correction
+and differed per AI system used, and a concrete case (Canto 1 lines 41-43)
+showed Norton's clause order fully inverted relative to the Italian tercet
+(43→41→42), which a fixed 3-in/3-out reordering forced into an unnatural
+split. `align_canto.py` avoided this entirely: Norton's word order was kept
+untouched and block length allowed to vary (one Italian line, or several),
+with line breaks only at block boundaries. Correctness became mechanically
+checkable (`norton_text.startswith(extracted)`) instead of depending on a
+subjective judgment of whether a reordering preserved meaning. The
+trade-off: a block still maps N Italian lines to one contiguous span, so the
+line inside a multi-line block that "owns" a given phrase was
+underdetermined ("Cross-model split comparison" below).
+
+**Note (added when this section was written):** this rationale for avoiding
+reordering no longer holds for the current pipeline. `align3.py`/`align1.py`
+solve the same Canto 1 lines 41-43 case this rationale cites by *explicitly
+requesting* a word move via numbered-line correspondence, validated
+mechanically by word-multiset equality rather than a prefix check - see
+ALGORITHM.md and "Two-stage, tercet-first alignment" below for how the
+validation problem that sank the original `dante-la-el` approach was solved.
+
+**Two modes:**
+- *Direct comparison* (default): the Italian line(s) are used directly as
+  the meaning reference for extraction.
+- *`--translate`*: an extra LLM call first translates the Italian line(s) to
+  simple modern English, used as the reference instead. Measured worse than
+  direct comparison with every model tested (see Results below); kept only
+  as an experiment switch.
+
+**Block boundary detection (island/search-window).** For each Italian line
+added to the current block, the LLM extracts (structured JSON output) the
+corresponding Norton span from the remaining paragraph text. The span's
+word offset from the start of that text decides the outcome:
+- offset 0: block complete, span consumed.
+- 0 < offset ≤ `--window-words` (default 20): an *island* - text before the
+  span belongs to a later Italian line (word-order divergence), so the
+  block is extended by one line and re-queried (does not consume a retry).
+- offset > window: rejected (costs a retry attempt).
+`--strict-prefix` sets the window to 0, requiring an exact prefix match
+(the pre-fix baseline). Without a window bound, an incidental far-end match
+would grow the block until `MAX_BLOCK_LINES` (6), converting rejections
+into large skipped spans.
+
+**Validation (hard, mechanical constraints):**
+1. Existence: extracted text must appear verbatim (case-insensitive) in the
+   Norton paragraph (anti-hallucination).
+2. Length ratio: extracted word count ≤ 2.0 × Italian word count.
+3. Position: word offset within the search window (see above).
+4. Non-empty (added after `ministral-3:14b` exposed empty extractions
+   passing the checks above vacuously - see "Bug history").
+Up to 3 retries re-run the extraction prompt from scratch; an island does
+not consume a retry.
+
+**Quote stripping:** symmetric only - strips a leading+trailing `"..."` or
+`'...'` pair, never a lone quote (preserves internal apostrophes like
+"don't" and exclamations like "Ah!").
+
+**Punctuation restoration:** if the character immediately following the
+matched span in the Norton source is sentence punctuation (`,.;:!?`) and
+the extracted text doesn't already end with it, it is appended - so output
+matches original formatting ("dark wood," not "dark wood").
+
+**Failure recovery:** a block that accumulates more than `MAX_BLOCK_LINES`
+(6) Italian lines without a successful extraction is skipped with no
+output ("Block exceeded"), and the paragraph's remaining text is preserved
+so alignment continues with the next Italian line(s) against it (rather
+than the earlier, removed `find_matching_italian_line` re-sync, which
+jumped to the next paragraph and almost never succeeded - see "Bug
+history"). `italian_idx` therefore always reaches the canto's end, but
+"coverage" (lines that ended up in an output block) is tracked separately
+since skipped blocks produce no output.
+
+**Configuration:** `ollama:ministral-3:14b` default model (free/local, not
+a recommendation - see model comparison below), temperature 1.0, 3 max
+retries, 2.0 length-ratio threshold, 20-word search window (0 with
+`--strict-prefix`), 6-line max block, only the first 500 characters of the
+remaining paragraph shown to the model per query.
+
+**Cross-model split comparison:** comparing final block boundaries chosen
+by `gemma4`, `luna`, and `terra` on Canto 1 (window mode) showed the
+concatenated Norton text was essentially identical across all three (2
+trailing-punctuation differences in 136 lines) - one effectively unique
+underlying alignment - but the exact line each model attributed a given
+phrase to differed at several points (e.g. lines 42-44: `terra` attributes
+"He seemed to be coming against me, with head high..." to line 42 alone,
+while `gemma4`/`luna` attribute it jointly to 42-43). Block-level extraction
+fixes *what* text belongs to a block but leaves *which line inside it*
+underdetermined.
+
 ## Results: direct comparison (default)
 
 | Model | Coverage (lines in an output block) | Blocks | Failed after 3 attempts | Hallucination rejects | Empty-extraction rejects | Block exceeded (lines skipped) |
