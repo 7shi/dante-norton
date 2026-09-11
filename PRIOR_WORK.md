@@ -1,6 +1,6 @@
 # Analysis of Prior Work
 
-This document analyzes previous attempts to create line-based versions of Norton's translation. For the implementation plan based on these findings, see [PLAN.md](PLAN.md).
+This document analyzes previous attempts to create line-based versions of Norton's translation. For the implementation that followed from these findings, see [alignment/README.md](alignment/README.md).
 
 ---
 
@@ -175,4 +175,4 @@ From the logs, the transformation process requires:
 
 This analysis provides the foundation for planning the current project's implementation approach. Key decisions to be made include processing methodology, scope, quality control procedures, tooling strategy, and documentation standards.
 
-See [PLAN.md](PLAN.md) for the implementation plan based on these findings.
+See [alignment/README.md](alignment/README.md) for the implementation built from these findings.

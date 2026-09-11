@@ -60,8 +60,7 @@ Positional argument: cantica name (`inferno`, `purgatorio`, or `paradiso`).
 Options:
 
 - `-c`/`--canto`: canto number (e.g. `-c 1`). Omit to run every canto of the
-  cantica in turn (canto numbers taken from `tokenize/<cantica>/*.txt`), in
-  one process.
+  cantica in turn (canto numbers taken from `dante-corpus`), in one process.
 - `--model`: LLM model, passed through to `llm7shi`; use an `ollama:`,
   `google:`, or `openai:` prefix to select the backend. Cloud backends need
   the corresponding API key set in the environment.
@@ -127,7 +126,7 @@ Inferno Canto 1 -> `alignment/inferno/01-*`):
 - **`<NN>-3.txt`**: one line of English (Norton) text per tercet-sized
   group (stage 2), comparable 1:1 by position against the former
   `01-3.txt`. English only - the Italian side is not repeated in this file
-  (see `<NN>-ranges.tsv` and `tokenize/<cantica>/*.txt` for that).
+  (see `<NN>-ranges.tsv`, and `dante-corpus` for the Italian text itself).
 - **`<NN>-1.txt`**: same shape, one line per Italian line in the normal
   case (stage 3), comparable against the former `01-1.txt`.
 - **`<NN>.log`**: the full processing trace of all three stages

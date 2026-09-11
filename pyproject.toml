@@ -6,11 +6,13 @@ readme = "README.md"
 repository = "https://github.com/7shi/dante-norton"
 requires-python = ">=3.13"
 dependencies = [
+    "dante-corpus",
     "llm7shi",
 ]
 
 [tool.uv.sources]
 llm7shi = { git = "https://github.com/7shi/llm7shi.git" }
+dante-corpus = { path = "../dante-corpus", editable = true }
 
 [build-system]
 requires = ["hatchling"]

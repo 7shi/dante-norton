@@ -49,6 +49,7 @@ REPO_ROOT = ALIGNMENT_DIR.parent
 
 sys.path.insert(0, str(REPO_ROOT))
 
+import dante_corpus
 from dante_norton import Canto, LLMClient
 
 
@@ -95,29 +96,20 @@ def parse_json_object(text: str) -> dict:
 
 
 class ItalianLine:
-    """Represents a single line from tokenize/<cantica>/*.txt"""
+    """Represents a single line of Italian source text, read via dante_corpus."""
 
-    def __init__(self, line_text: str):
-        parts = line_text.split('|')
-        self.full_text = parts[0]
-        self.tokens = parts[1:] if len(parts) > 1 else []
-        self.line_num = 0  # Will be set later
+    def __init__(self, full_text: str, line_num: int):
+        self.full_text = full_text
+        self.line_num = line_num
 
     def __repr__(self):
-        return f"ItalianLine({self.full_text!r}, tokens={len(self.tokens)})"
+        return f"ItalianLine({self.full_text!r}, line_num={self.line_num})"
 
 
-def load_italian_lines(filepath: str) -> List[ItalianLine]:
-    """Load Italian lines from tokenize/<cantica>/*.txt file"""
-    lines = []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        for line_num, line in enumerate(f, 1):
-            line = line.strip()
-            if line:
-                italian_line = ItalianLine(line)
-                italian_line.line_num = line_num
-                lines.append(italian_line)
-    return lines
+def load_italian_lines(cantica: str, canto: int) -> List[ItalianLine]:
+    """Load a canto's Italian lines via the dante_corpus API."""
+    return [ItalianLine(line.text, line.no)
+            for line in dante_corpus.canto(cantica, canto).lines()]
 
 
 def load_norton_paragraphs(filepath: str) -> List[Tuple[int, str]]:
@@ -594,7 +586,6 @@ def run_stage3(llm: LLMClient, group_rows: List[FinalRow], test: bool) -> Tuple[
 
 def align_canto(cantica: str, canto: int, args: argparse.Namespace) -> None:
     """Run the full pipeline for one canto of one cantica."""
-    italian_file = REPO_ROOT / "tokenize" / cantica / f"{canto:02d}.txt"
     norton_file = REPO_ROOT / "en-norton" / cantica / f"{canto:02d}.txt"
     out_dir = ALIGNMENT_DIR / cantica
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -614,9 +605,7 @@ def align_canto(cantica: str, canto: int, args: argparse.Namespace) -> None:
                   f"Block size: {args.block_size}, Test: {args.test}")
         log_print()
 
-        italian_lines = load_italian_lines(italian_file)
-        for i, line in enumerate(italian_lines, 1):
-            line.line_num = i
+        italian_lines = load_italian_lines(cantica, canto)
         paragraphs = load_norton_paragraphs(norton_file)
 
         llm = LLMClient(model=args.model, think=args.think, temperature=args.temperature)
@@ -689,7 +678,7 @@ def main():
     if args.canto is not None:
         align_canto(args.cantica, args.canto, args)
     else:
-        cantos = sorted(int(p.stem) for p in (REPO_ROOT / "tokenize" / args.cantica).glob("*.txt"))
+        cantos = sorted(dante_corpus.cantos(args.cantica))
         for canto in cantos:
             align_canto(args.cantica, canto, args)
 
