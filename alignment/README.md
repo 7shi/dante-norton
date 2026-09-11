@@ -4,22 +4,22 @@ Alignment scripts for the Italian original text and Norton's English translation
 
 ## Overview
 
-The current, recommended approach is a three-stage pipeline that
-hierarchically decomposes each Norton paragraph down to one row per Italian
-line, never extracting or verbatim-matching text - each stage only
-rearranges words already known to belong to a given span, validated by
-word-multiset equality:
+The current, recommended approach is `align.py`, a single script that runs a
+three-stage pipeline hierarchically decomposing each Norton paragraph down
+to one row per Italian line, never extracting or verbatim-matching text -
+each stage only rearranges words already known to belong to a given span,
+validated by word-multiset equality:
 
-- **`align_ranges.py`**: one LLM call over the whole canto identifies, for
-  each Norton paragraph, the range of Italian lines it corresponds to.
-- **`align3.py`**: reads that ranges TSV and splits each paragraph's Norton
-  text into tercet-sized (3-line, by default) groups.
-- **`align1.py`**: reads `align3.py`'s output and further splits any
-  multi-line group into one fragment per Italian line.
+1. One LLM call over the whole canto identifies, for each Norton paragraph,
+   the range of Italian lines it corresponds to.
+2. Each paragraph's Norton text is split into tercet-sized (3-line, by
+   default) groups.
+3. Any multi-line group is further split into one fragment per Italian
+   line.
 
-See [ALGORITHM.md](ALGORITHM.md) for the full algorithm description,
-numbered-line output format, and Canto 1 results (near-exact match against
-both fixed gold references).
+See [ALGORITHM.md](ALGORITHM.md) for the full algorithm description and
+Canto 1 results (near-exact match against both former fixed gold
+references).
 
 Two earlier, superseded approaches are documented but no longer present as
 scripts:
@@ -36,6 +36,11 @@ scripts:
   design rationale and gold-comparison results that motivated moving away
   from extraction entirely.
 
+A later, three-script version of the current approach (`align_ranges.py`,
+`align3.py`, `align1.py`, run as three separate commands) has since been
+unified into the single `align.py`; see git history for the three-script
+sources.
+
 [MEMO.md](MEMO.md) has the full experimental history across LLM backends.
 `openai:gpt-5.6-terra` is the sole benchmark model going forward (see
 MEMO.md's model-selection decision) - `ministral-3:14b`, `qwen3.6`,
@@ -47,31 +52,43 @@ Two fixed gold references for Canto 1, `01-1.txt` (per-line) and `01-3.txt`
 
 ## Usage
 
-### The current pipeline
-
 ```bash
-# Stage 1: identify paragraph -> Italian line ranges (once per canto; its
-# output is treated as a fixed input to the rest of the pipeline, not
-# regenerated on every run - see ALGORITHM.md)
-uv run alignment/align_ranges.py 1 \
-    -o alignment/output/inferno-01-ranges.log --model openai:gpt-5.6-terra
-
-# Stage 2 (align3.py): -i (ranges TSV) and -o (log path) are both required
-uv run alignment/align3.py 1 -i alignment/output/inferno-01-ranges.tsv \
-    -o alignment/output/inferno-01-3.log --model openai:gpt-5.6-terra
-
-# Stage 3 (align1.py): -i (align3.py's group TSV) and -o are both required
-uv run alignment/align1.py 1 -i alignment/output/inferno-01-3.tsv \
-    -o alignment/output/inferno-01-1.log --model openai:gpt-5.6-terra
-
-# Both accept: --model, --temperature, --think, --test (process only the
-# first paragraph/group, for a quick local smoke test)
-# align3.py additionally accepts --block-size (default: 3)
+uv run alignment/align.py inferno -c 1 --model openai:gpt-5.6-terra
 ```
 
-The `--model` value is passed through to `llm7shi`; use an `ollama:`,
-`google:`, or `openai:` prefix to select the backend. Cloud backends need
-the corresponding API key set in the environment.
+Positional argument: cantica name (`inferno`, `purgatorio`, or `paradiso`).
+Options:
+
+- `-c`/`--canto`: canto number (e.g. `-c 1`). Omit to run every canto of the
+  cantica in turn (canto numbers taken from `tokenize/<cantica>/*.txt`), in
+  one process.
+- `--model`: LLM model, passed through to `llm7shi`; use an `ollama:`,
+  `google:`, or `openai:` prefix to select the backend. Cloud backends need
+  the corresponding API key set in the environment.
+- `--temperature` (default: 1.0)
+- `--think`: enable LLM thinking (disabled by default - see "Thinking makes
+  the rearranging split worse" below)
+- `--block-size` (default: 3): number of Italian lines per stage-2 group
+- `--test`: process only the first paragraph/group at each stage, for a
+  quick local smoke test
+
+### Thinking makes the rearranging split worse
+
+`--think` defaults to off. A same-prompt comparison on Canto 1 with
+`openai:gpt-5.6-terra` (ranges identical either way) found that enabling
+thinking made the stage 2/3 rearranging split *less* faithful to the
+Italian line structure at the hyperbaton case (Canto 1 lines 41-43, see
+ALGORITHM.md "Design rationale"): with thinking on, the model misattributed
+"the hour of the time and the sweet season" to the wrong clause entirely
+(as if it were the subject of "set in motion those beautiful things",
+which in the Italian is done by `l'amor divino`/Love Divine, not by the
+hour and season) and additionally split "But" off into its own line,
+detached from the Italian line it was supposed to translate. With thinking
+off, the same phrase landed correctly on its own line, matching the
+Italian's postposed-subject line exactly. Elsewhere the two runs were a
+similar mix of minor word-order variance either way (expected at
+temperature 1.0), but this one case was decisive enough to keep `--think`
+opt-in rather than default.
 
 ### Removed: `align_canto.py` (single-stage, extraction-only)
 
@@ -96,31 +113,55 @@ two-stage process: tercet-level segmentation, then per-line reordering with
 no word substitution - the same two stages the current pipeline automates,
 this time reliably) and [ALGORITHM.md](ALGORITHM.md) for the current
 pipeline's results against both. Both files have since been removed from
-this directory; they only informed development-time validation.
+this directory; they only informed development-time validation. `align.py`
+now writes its own `<NN>-1.txt` / `<NN>-3.txt` in the same per-line /
+per-tercet shape, as real pipeline output rather than hand-edited gold data.
 
 ## Output
 
-Every script in the current pipeline writes a log (`-o/--output`) and a
-companion TSV alongside it - same base name, `.tsv` extension (e.g.
-`inferno-01-3.log` / `inferno-01-3.tsv`):
+`align.py` writes to `alignment/<cantica>/`, canto-number-prefixed (e.g.
+Inferno Canto 1 -> `alignment/inferno/01-*`):
 
-- **`align_ranges.py`**: `paragraph<TAB>start_line<TAB>end_line`, one row
-  per Norton paragraph.
-- **`align3.py`**: `italian_lines<TAB>norton_text`, one row per tercet-sized
-  group (`italian_lines` is `|`-joined when the group spans more than one
-  line). Comparable 1:1 by position against `01-3.txt`.
-- **`align1.py`**: same shape, one row per Italian line in the normal case
-  (a `|`-joined multi-line row only where a group's split failed and was
-  kept merged). Comparable against `01-1.txt`.
+- **`<NN>-ranges.tsv`**: `paragraph<TAB>start_line<TAB>end_line`, one row
+  per Norton paragraph (stage 1).
+- **`<NN>-3.txt`**: one line of English (Norton) text per tercet-sized
+  group (stage 2), comparable 1:1 by position against the former
+  `01-3.txt`. English only - the Italian side is not repeated in this file
+  (see `<NN>-ranges.tsv` and `tokenize/<cantica>/*.txt` for that).
+- **`<NN>-1.txt`**: same shape, one line per Italian line in the normal
+  case (stage 3), comparable against the former `01-1.txt`.
+- **`<NN>.log`**: the full processing trace of all three stages
+  (per-paragraph/group progress, retries, rejections), a final
+  Italian+English listing per stage, and summary counts (total rows/groups,
+  how many were kept merged, coverage). Unconditionally overwritten on every
+  run (gitignored via the repo root `.gitignore`'s `*.log`).
 
-Each log contains the full processing trace (per-paragraph/group progress,
-retries, rejections), a final detailed Italian+English listing, and summary
-counts (total rows/groups, how many were kept merged, coverage).
+A group or paragraph whose split never validates is kept as a single merged
+line spanning multiple Italian lines, rather than dropping text - so
+`<NN>-3.txt` / `<NN>-1.txt` may have fewer lines than the canto's tercet /
+line count when this happens (check the log's merge counts).
 
-`align_canto.py` (removed) wrote to `alignment/output/canto_XX.log` instead -
-see MEMO.md for its log format.
+Progress and errors are also printed to the console as the script runs.
 
-Progress and errors are also printed to the console as any script runs.
+### Resuming: each stage skips if its output file already exists
+
+`align.py` checks each of the three output files before running that stage:
+if `<NN>-ranges.tsv` / `<NN>-3.txt` / `<NN>-1.txt` is already present, that
+stage is skipped (no LLM calls) and the file is loaded instead. This lets a
+rerun pick up only the stages whose output is missing - e.g. after deleting
+just `<NN>-1.txt` to retry stage 3 with a different model, without
+re-spending stage 1/2's calls.
+
+Because `<NN>-3.txt` and `<NN>-1.txt` carry no Italian side, a skipped
+stage's Italian line groups are recomputed deterministically from the
+ranges and `--block-size` (assuming no merge fallback happened) and
+cross-checked against the loaded file's row count; a mismatch (e.g. the
+file was produced by a run that hit a merge fallback, or with a different
+`--block-size`) aborts with a message rather than silently misaligning -
+delete the file and rerun to regenerate it. Delete any of the three files
+to force that stage, and every stage after it whose input it feeds, to
+rerun; deleting only a later-stage file (e.g. `<NN>-1.txt` while keeping
+`<NN>-3.txt`) reruns just that stage.
 
 ## Requirements
 
@@ -135,12 +176,11 @@ Progress and errors are also printed to the console as any script runs.
 ### Splits failing / falling back to merged rows
 
 Backend choice matters more than any flag here - see [MEMO.md](MEMO.md) for
-measured differences between models. `align3.py`/`align1.py` have no
-window/island to tune; check "Paragraphs/Groups kept merged" in the log -
-a high count means the model is struggling to produce a valid numbered
-split for that canto, which was the deciding factor in dropping `qwen3.6`
-from the benchmark set once the pipeline needed 6+ groups in a single call
-(see MEMO.md).
+measured differences between models. Stages 2/3 have no window/island to
+tune; check "kept merged" in the log - a high count means the model is
+struggling to produce a valid numbered split for that canto, which was the
+deciding factor in dropping `qwen3.6` from the benchmark set once the
+pipeline needed 6+ groups in a single call (see MEMO.md).
 
 ### `align_canto.py` matching failures (historical, script removed)
 

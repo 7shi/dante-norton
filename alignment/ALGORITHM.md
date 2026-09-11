@@ -5,10 +5,11 @@
 This document describes the current, recommended algorithm for aligning
 Italian lines from Dante's *Inferno* with Charles Eliot Norton's English
 prose translation: a three-stage pipeline that hierarchically decomposes
-each Norton paragraph down to one row per Italian line.
+each Norton paragraph down to one row per Italian line, implemented as a
+single script, `align.py`.
 
 ```
-align_ranges.py          align3.py                  align1.py
+Stage 1                   Stage 2                    Stage 3
 paragraph -> range   ->   paragraph -> tercet   ->   tercet -> line
 (whole canto,              (word-rearranging          (word-rearranging
  1 LLM call)                 split, tercet-sized)        split, per-line)
@@ -17,7 +18,11 @@ paragraph -> range   ->   paragraph -> tercet   ->   tercet -> line
 For the earlier, superseded single-stage extraction algorithm
 (`align_canto.py`) and the extraction-based two-stage `align3.py` it was
 replaced by, see [MEMO.md](MEMO.md) - the historical algorithm summary near
-the top, and "Two-stage, tercet-first alignment" further down.
+the top, and "Two-stage, tercet-first alignment" further down. (An
+intermediate, three-script version of the current algorithm -
+`align_ranges.py`, `align3.py`, `align1.py`, run as three separate commands
+- has since been unified into `align.py`; the stage boundaries and logic
+below are unchanged, only the packaging.)
 
 ## Core Challenge
 
@@ -61,13 +66,13 @@ the original `dante-la-el` project's Bard-based process (see
 tried - but where that project's ad hoc reordering "required heavy manual
 correction and differed per AI system used" (MEMO.md), this pipeline adds
 two things that made it work reliably with `openai:gpt-5.6-terra`: the
-paragraph's tercet boundaries are fixed in advance (`align_ranges.py`), so
+paragraph's tercet boundaries are fixed in advance (stage 1), so
 each split only has to solve one already-scoped sub-problem, and the model
 is prompted with the Italian side *renumbered to match the requested
 output* (see "Numbered-line output" below) rather than left to infer the
 split points itself.
 
-## Stage 1: `align_ranges.py` (paragraph -> Italian line range)
+## Stage 1: paragraph -> Italian line range
 
 One LLM call over the *entire* canto: given the full numbered Italian text
 and the full set of Norton paragraphs (summary paragraph excluded, numbered
@@ -82,12 +87,10 @@ count. Retried up to `MAX_ATTEMPTS` (3) on failure.
 
 **Result (Canto 1, `openai:gpt-5.6-terra`):** all 6 paragraph ranges exact
 on the first attempt, matching a ground truth derived independently from
-`01-3.txt` (see MEMO.md "Whole-canto paragraph-range identification").
-Because this has been verified reliable, it is treated as a fixed input
-rather than regenerated on every run - see "Files and running the pipeline"
-below.
+the former `01-3.txt` (see MEMO.md "Whole-canto paragraph-range
+identification").
 
-## Stage 2: `align3.py` (paragraph -> tercet-sized group)
+## Stage 2: paragraph -> tercet-sized group
 
 For each paragraph (using the line range from stage 1), its Italian lines
 are chunked into consecutive groups of `--block-size` (default 3, i.e. a
@@ -99,17 +102,18 @@ A paragraph whose split never validates (`MAX_ATTEMPTS` retries exhausted)
 is kept as a single merged row spanning its whole line range, rather than
 dropping text.
 
-## Stage 3: `align1.py` (tercet -> per-line)
+## Stage 3: tercet -> per-line
 
-Reads stage 2's group TSV and further splits any group spanning more than
+Takes stage 2's group rows and further splits any group spanning more than
 one Italian line into one fragment per line, via the *same*
 `split_norton_span` function - each Italian line is simply passed as its
 own one-line group. A group whose split never validates is kept merged
-(multiple Italian lines joined by `|`), same convention as stage 2.
+(one output line spanning multiple Italian lines), same convention as
+stage 2.
 
 ## `split_norton_span`: the shared rearranging-split primitive
 
-Both stage 2 and stage 3 call the same function in `align3.py`, generic
+Both stage 2 and stage 3 call the same function in `align.py`, generic
 over the group size (one Italian line, or several):
 
 ```python
@@ -153,11 +157,11 @@ Numbering does not reset to 1 for every call - callers thread a running
 serial number through so cross-call log output stays traceable and,
 qualitatively, so the model always sees a number matching the item's actual
 position rather than a repeating 1..3:
-- **`align3.py`** maintains a canto-wide running counter across paragraphs
+- **Stage 2** maintains a canto-wide running counter across paragraphs
   (paragraph 2's groups are numbered 1-9, paragraph 3's continue at 10-12,
   etc. for Canto 1), incremented by each paragraph's group count regardless
   of whether a split call was actually made.
-- **`align1.py`** needs no separate counter: each group is a single Italian
+- **Stage 3** needs no separate counter: each group is a single Italian
   line, so its own real (canto-wide) `line_num` is used directly as
   `start_num`.
 
@@ -190,38 +194,38 @@ word-multiset check remains the only mechanical guarantee.
 
 ## Output Format
 
-Every stage writes a log (`-o/--output`) and a companion TSV alongside it -
-same base name, `.tsv` extension (e.g. `inferno-01-3.log` /
-`inferno-01-3.tsv`), not `<name>.log.tsv`.
+`align.py` writes to `alignment/<cantica>/`, canto-number-prefixed, plus one
+combined log for all three stages (e.g. Inferno Canto 1 ->
+`alignment/inferno/01-*`, `alignment/inferno/01.log`). English only - no
+Italian side is repeated in the tercet/line output files (see
+[README.md](README.md) "Output" for details).
 
-- **`align_ranges.py`**: `paragraph<TAB>start_line<TAB>end_line`, one row
-  per Norton paragraph.
-- **`align3.py`**: `italian_lines<TAB>norton_text`, one row per tercet-sized
-  group; `italian_lines` is `|`-joined when the group spans more than one
-  Italian line (always for a merge fallback; possible for the final partial
-  group of a paragraph).
-- **`align1.py`**: same shape, but one row per Italian line in the normal
-  case (a `|`-joined multi-line row only where a group's split failed and
-  was kept merged).
+- **`<NN>-ranges.tsv`**: `paragraph<TAB>start_line<TAB>end_line`, one row
+  per Norton paragraph (stage 1).
+- **`<NN>-3.txt`**: one line of English text per tercet-sized group (stage
+  2); a merge-fallback group still contributes exactly one line, so the
+  file may have fewer lines than the canto's tercet count when this
+  happens.
+- **`<NN>-1.txt`**: same shape, one line per Italian line in the normal
+  case (stage 3), likewise possibly fewer lines on a merge fallback.
+
+Each stage is skipped (no LLM calls) if its output file already exists, and
+loaded instead - see [README.md](README.md) "Resuming" for the mechanism
+and how the per-line output files' loss of the Italian side is handled
+(deterministic group recomputation, cross-checked against the loaded row
+count). `<NN>.log` is unconditionally overwritten every run.
 
 ## Files and running the pipeline
 
 ```bash
-# Stage 1 (once per canto - its ranges TSV is a fixed input to the rest)
-uv run alignment/align_ranges.py 1 \
-    -o alignment/output/inferno-01-ranges.log --model openai:gpt-5.6-terra
-
-# Stages 2-3
-uv run alignment/align3.py 1 -i alignment/output/inferno-01-ranges.tsv \
-    -o alignment/output/inferno-01-3.log --model openai:gpt-5.6-terra
-uv run alignment/align1.py 1 -i alignment/output/inferno-01-3.tsv \
-    -o alignment/output/inferno-01-1.log --model openai:gpt-5.6-terra
+uv run alignment/align.py inferno -c 1 --model openai:gpt-5.6-terra
 ```
 
-Stage 1's ranges TSV is treated as a fixed, already-verified input, not
-something to regenerate on every run. `--test` (stages 2/3 only; stage 1
-makes a single whole-canto call already) processes just the first
-paragraph/group, for a quick local smoke test.
+`--test` processes just the first paragraph/group at each of stages 2 and
+3, for a quick local smoke test (stage 1 always makes a single whole-canto
+call). It only affects a stage that actually runs - a skipped (already
+output-present) stage ignores it, since it loads the existing file rather
+than reprocessing.
 
 ## Results (Canto 1, `openai:gpt-5.6-terra`)
 
@@ -249,11 +253,15 @@ robustness at larger scale, remain open (see MEMO.md "Open questions").
 
 - **LLM model**: no default reflects a recommendation - benchmark model is
   `openai:gpt-5.6-terra` throughout (see MEMO.md's model-selection
-  history); each script's `--model` flag defaults to `ollama:ministral-3:14b`
-  only as a free local fallback.
+  history); `align.py`'s `--model` flag defaults to
+  `ollama:ministral-3:14b` only as a free local fallback.
 - **Temperature**: 1.0.
+- **Thinking**: disabled by default (`--think` to enable) - a same-prompt
+  comparison on Canto 1 found thinking made the lines 41-43 hyperbaton split
+  worse, not better (see README.md "Thinking makes the rearranging split
+  worse").
 - **Max attempts**: 3 per split/range-identification call.
-- **Block size** (`align3.py --block-size`): 3 Italian lines (a tercet) by
+- **Block size** (`align.py --block-size`): 3 Italian lines (a tercet) by
   default.
 
 ## Limitations
