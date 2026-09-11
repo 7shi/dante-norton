@@ -136,12 +136,15 @@ Inferno Canto 1 -> `alignment/inferno/01-*`):
   repo root `.gitignore`'s `*.log`).
 
 A group or paragraph whose split never validates (after `MAX_ATTEMPTS`
-retries) aborts the canto rather than writing a merged line - so
+retries) is skipped rather than written as a merged line: its rows stay
+blank and the stage moves on - so
 `<NN>-3.txt` / `<NN>-1.txt` never contain a row spanning multiple Italian
 lines, and their row counts always match the deterministic recomputation
 (a stage-2 file may still be shorter than the canto's line count when a
-paragraph's range is not a multiple of `--block-size`). Delete the failing
-stage's output file and rerun to retry the split.
+paragraph's range is not a multiple of `--block-size`). Stages write their
+files as they fill rows in, so a failed or interrupted run keeps the rows
+that validated and leaves the rest blank; a rerun re-splits only the blank
+rows.
 
 Progress and errors are also printed to the console as the script runs, via
 a live `StatusLine` progress bar - see [STATUSLINE.md](STATUSLINE.md) for
@@ -167,6 +170,30 @@ to force that stage, and every stage after it whose input it feeds, to
 rerun; deleting only a later-stage file (e.g. `<NN>-1.txt` while keeping
 `<NN>-3.txt`) reruns just that stage.
 
+Blank rows are the finer-grained marker: a stage with blank rows in its
+output file does not skip - it re-splits exactly what the blanks mark (a
+paragraph at stage 2, a group at stage 3) and keeps every other row
+row-for-row. Blanks arise from failed or interrupted runs (stages write as
+they fill rows in) or from `-p`, and can be edited in by hand to redo
+specific rows.
+
+After hand-editing `<NN>-ranges.tsv` (debug.py's diagnosis often ends with
+one), `-p` avoids redoing the whole canto: it blanks the named paragraphs'
+rows in the existing files and lets stages 2-3 refill exactly those:
+
+    uv run alignment/align.py purgatorio -c 1 -p 10-11
+
+`-p` needs `-c`, takes the same range grammar, and must be one contiguous
+paragraph run covering every paragraph whose range changed (an edited
+boundary touches the two paragraphs sharing it). Paragraphs outside `-p`
+keep their rows row-for-row; kept rows whose word content no longer matches
+their Norton paragraph (a stale or truncated file) abort the patch. A range
+edit that changes a paragraph's group count is absorbed by re-laying the
+file out (the paragraphs before the run keep its leading rows, those after
+it its trailing rows). When `<NN>-1.txt` is absent, stage 3 runs fresh -
+and keeps its progress as it goes, so a later failure resumes at the first
+blank row.
+
 ## Requirements
 
 - Python 3.13+ (see `pyproject.toml`)
@@ -178,7 +205,7 @@ rerun; deleting only a later-stage file (e.g. `<NN>-1.txt` while keeping
 
 ## Troubleshooting
 
-### Splits failing / cantos aborting
+### Splits failing / blank rows left behind
 
 Use [debug.py](debug.py) to investigate - start with `diagnose`, which reads
 the last failure from `<NN>.log`, cross-checks the files on disk, and shows
@@ -194,18 +221,22 @@ group, `words`-diff a failed response):
     uv run python alignment/debug.py show inferno 16 -p 10
     uv run python alignment/debug.py check inferno 16
 
-The most common cause is a wrong stage-1 line range at a paragraph boundary
-(e.g. Inferno 16's paragraph 10/11, see debug.py's docstring); fix
-`<NN>-ranges.tsv`, delete the affected stage outputs, and rerun.
+The two common causes: a wrong stage-1 line range at a paragraph boundary
+(e.g. Inferno 16's paragraph 10/11), and a stage-2 split drawing a group
+boundary one sentence too late while the ranges are fine (e.g. Purgatorio
+1's group 29) - both are worked examples in debug.py's docstring. After
+fixing `<NN>-ranges.tsv`, re-split just the affected paragraphs with `-p`
+(see "Resuming" above); a plain rerun also works, retrying only the rows
+left blank.
 
 Backend choice matters more than any flag here - see [MEMO.md](MEMO.md) for
 measured differences between models. Stages 2/3 have no window/island to
-tune; a split that never validates aborts the canto (the retries are
-visible in the log), so a model that often fails the numbered-split format
-leaves cantos unfinishable - which was the deciding factor in dropping
-`qwen3.6` from the benchmark set once the pipeline needed 6+ groups in a
-single call (see MEMO.md). Delete the failing stage's output file and
-rerun (ideally with a different model) to retry.
+tune; a split that never validates leaves blank rows behind (the retries
+are visible in the log), so a model that often fails the numbered-split
+format leaves cantos riddled with blanks - which was the deciding factor
+in dropping `qwen3.6` from the benchmark set once the pipeline needed 6+
+groups in a single call (see MEMO.md). Rerun to retry the blanks (ideally
+with a different model).
 
 ### `align_canto.py` matching failures (historical, script removed)
 

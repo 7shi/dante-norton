@@ -51,8 +51,14 @@ Read this when a canto fails. Symptom playbook:
    (paragraph<TAB>start<TAB>end; contiguous, no gaps/overlaps), then
    regenerating the stages downstream of it (they are skipped otherwise):
 
-       rm alignment/<cantica>/<NN>-3.txt alignment/<cantica>/<NN>-1.txt
-       uv run python alignment/align.py <cantica> -c <NN>
+        rm alignment/<cantica>/<NN>-3.txt alignment/<cantica>/<NN>-1.txt
+        uv run python alignment/align.py <cantica> -c <NN>
+
+   Or re-split just the affected paragraphs, splicing the new rows into the
+   existing files (one contiguous run covering every paragraph whose range
+   changed - an edited boundary touches the two paragraphs sharing it):
+
+        uv run python alignment/align.py purgatorio -c 1 -p 10-11
 
    Real example - Inferno 16: the ranges said paragraph 10 = lines 79-90,
    but Norton paragraph 10 ends at line 87 ("...seemed wings.") and lines
@@ -66,10 +72,11 @@ Read this when a canto fails. Symptom playbook:
        uv run python alignment/debug.py check inferno 16
 
    Validates the ranges TSV (contiguity/coverage) and cross-checks the
-   <NN>-3.txt / <NN>-1.txt row counts (flagging empty rows) and
-   per-paragraph word content against the Norton text. Stale files -
-   produced before a ranges fix, a Norton text edit, or a --block-size
-   change - are reported with the file to delete and rerun.
+   <NN>-3.txt / <NN>-1.txt row counts (blank rows are reported as pending
+   re-splits, not failures) and per-paragraph word content against the
+   Norton text. Stale files - produced before a ranges fix, a Norton text
+   edit, or a --block-size change - are reported with the file to delete
+   and rerun.
 
 5. Eyeball the failing group - its Italian lines, the stage-2 row claiming
    to cover them (from <NN>-3.txt), and the stage-3 rows (from <NN>-1.txt):
@@ -78,8 +85,9 @@ Read this when a canto fails. Symptom playbook:
 
    Filter with -p instead of -g to walk a whole paragraph. If the stage-2
    row has no words for the group's last Italian line(s), it is a stage-2
-   boundary mistake: delete <NN>-3.txt and <NN>-1.txt and rerun (step 3's
-   commands). The range itself is only wrong if `show` (step 2) shows a
+   boundary mistake: re-split the affected paragraphs with -p (step 3's
+   commands), or blank the paragraph's rows in <NN>-3.txt / <NN>-1.txt and
+   rerun. The range itself is only wrong if `show` (step 2) shows a
    boundary mismatch.
 
    Real example - Purgatorio 1: stage 3 kept failing on group 29 (lines
@@ -87,7 +95,7 @@ Read this when a canto fails. Symptom playbook:
    stage-2 row ended at "...thou hold her." (Norton turns the Italian ':'
    into '.'), and line 81's words ("For her love, then, incline thyself to
    us;") sat in the next group's row. The paragraph's words all matched on
-   disk, so `check` was green. Fix: delete 01-3.txt and rerun.
+   disk, so `check` was green. Fix: align.py purgatorio -c 1 -p 10-11.
 
 6. Word-diff one split response (per-group/line word counts plus
    missing/extra words):
@@ -381,17 +389,22 @@ def check_canto(ctx: CantoContext) -> Tuple[int, List[str]]:
             continue
         empties = [n + 1 for n, t in enumerate(texts) if not t.strip()]
         if empties:
-            lines.append(f"✗ {path.name}: {len(texts)} row(s) but row(s) {empties} empty")
-            failures += 1
+            lines.append(f"· {path.name}: {len(texts)} row(s), {len(empties)} blank "
+                         f"(pending re-split: rows {empties})")
         else:
             lines.append(f"✓ {path.name}: {len(texts)} row(s)")
         offset = 0
         for r, _, gs in entries:
             n = rows_of(gs)
-            got = " ".join(texts[offset:offset + n])
+            seg = texts[offset:offset + n]
             offset += n
+            if any(not t.strip() for t in seg):
+                lines.append(f"    · paragraph {r.paragraph}: pending "
+                             f"({sum(not t.strip() for t in seg)} blank row(s))")
+                continue
             msgs = check_paragraph_words(f"paragraph {r.paragraph}",
-                                         ctx.paragraphs.get(r.paragraph, ""), got)
+                                         ctx.paragraphs.get(r.paragraph, ""),
+                                         " ".join(seg))
             failures += 1 if msgs else 0
             lines.extend(msgs)
     return failures, lines
@@ -547,8 +560,10 @@ def assess_group_split(ctx: CantoContext, entries, fragments: Dict[int, str],
                       f"end; inspect with 'show -p {r.paragraph}' (step 3 in the docstring)")
     else:
         report.append(f"    but every Norton word sits in some stage-2 row - the stage-2 split "
-                      f"drew this group's boundary wrong (see 'rows -g {serial}'); delete "
-                      f"{ctx.tercet_path.name} and {ctx.line_path.name} and rerun")
+                      f"drew this group's boundary wrong; re-split the affected paragraphs: "
+                      f"align.py {ctx.cantica} -c {ctx.canto} -p "
+                      f"{paragraph_span(entries, serial)} (or just rerun align.py - "
+                      f"blank rows are retried on their own)")
     return fragments, issues, report
 
 
@@ -603,6 +618,21 @@ def find_log_failure(ctx: CantoContext) -> Tuple[int, str, Dict[int, str]] | Non
     return stage, detail, fragments
 
 
+def paragraph_span(entries, serial: int) -> str:
+    """
+    A ready-to-use `-p` argument for re-splitting the failing group's
+    paragraph plus the next group's (a stage-2 boundary mistake pushes the
+    words into the neighbouring group, which may sit in the next
+    paragraph): "10" or "10-11".
+    """
+    for i, (r, s, gs) in enumerate(entries):
+        if s <= serial < s + len(gs):
+            if serial + 1 < s + len(gs) or i + 1 >= len(entries):
+                return str(r.paragraph)
+            return f"{r.paragraph}-{entries[i + 1][0].paragraph}"
+    return str(serial)
+
+
 def diagnose_group(ctx: CantoContext, entries, serial: int,
                    fragments: Dict[int, str]) -> None:
     """
@@ -616,16 +646,18 @@ def diagnose_group(ctx: CantoContext, entries, serial: int,
         print(f"  ✗ group {serial} is not in {ctx.ranges_path}")
         return
     r, serial_start, groups = entry
-    index = serial - serial_start
-    tercets = read_stage_rows(ctx.tercet_path)
-    offset = sum(len(gs) for _, s, gs in entries if s < serial_start)
+    print(f"\nGroup {serial} is in paragraph {r.paragraph} (lines {r.start_line}-"
+          f"{r.end_line}, groups {serial_start}-{serial_start + len(groups) - 1})")
 
     print(f"\nStage-2 rows around the failure (it: Italian line, en: the stage-2 row "
           f"that claims to cover it):")
+    index = serial - serial_start
+    tercets = read_stage_rows(ctx.tercet_path)
+    offset = sum(len(gs) for _, s, gs in entries if s < serial_start)
     for k in range(index, min(index + 2, len(groups))):
         group = groups[k]
         lo, hi = group[0].line_num, group[-1].line_num
-        print(f"  group {serial_start + k} (lines {lo}-{hi}):")
+        print(f"  group {serial_start + k} (lines {lo}-{hi}, paragraph {r.paragraph}):")
         for line in group:
             print(f"    it {line.line_num}: {line.full_text}")
         if tercets is not None and offset + k < len(tercets):
@@ -650,6 +682,10 @@ def diagnose_group(ctx: CantoContext, entries, serial: int,
     print(f"  uv run python alignment/debug.py rows {ctx.cantica} {ctx.canto} -g {serial}")
     print(f"  uv run python alignment/debug.py words {ctx.cantica} {ctx.canto} -g {serial} "
           f"--response '...'")
+    print(f"Fix (after correcting {ctx.ranges_path.name} if the range is at fault; "
+          f"a plain rerun also works - it retries only the blank rows):")
+    print(f"  uv run python alignment/align.py {ctx.cantica} -c {ctx.canto} "
+          f"-p {paragraph_span(entries, serial)}")
 
 
 def diagnose_paragraph(ctx: CantoContext, entries, para_num: int,
@@ -681,7 +717,7 @@ def diagnose_paragraph(ctx: CantoContext, entries, para_num: int,
         print(f"  next paragraph {r.paragraph + 1} opens: {textwrap.shorten(nxt, 100)}")
     print(f"  -> the English must start at the range's first Italian line's content and end "
           f"at its last (steps 2-3); a tercet off means edit {ctx.ranges_path.name}, then "
-          f"delete {ctx.tercet_path.name} and rerun")
+          f"re-split with -p (or blank the paragraph's rows and rerun)")
     if fragments:
         print("\nLast attempt (from the log) vs the Norton paragraph:")
         words_paragraph(ctx, entries, fragments, para_num)
@@ -692,8 +728,9 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     Entry point: name a canto, learn where its last failure is and what to
     look at first - no LLM calls. Reads the failure from <NN>.log when
     present, cross-checks the files on disk (see `check`), and for a
-    stage-3 failure shows the stage-2 rows around it bilingually with a
-    range-vs-stage-2 verdict.
+    stage-3 failure shows the failing group's stage-2 row bilingually with
+    the next group's - the misplaced English usually sits there - plus a
+    range-vs-stage-2 verdict and a ready-to-run `-p` fix command.
     """
     ctx = CantoContext(args.cantica, args.canto, args.block_size)
     print(f"Diagnosing {args.cantica} {args.canto:02d} (block size {ctx.block_size})")

@@ -99,17 +99,20 @@ isn't a multiple of the block size. The whole paragraph's Norton text is
 then split into one fragment per group via `split_norton_span` (see below).
 
 A paragraph whose split never validates (`MAX_ATTEMPTS` retries exhausted)
-aborts the canto: the stage's output file is not written, so no merged
+is skipped: its rows stay blank in the stage's output file (the pending
+marker) and the stage moves on to the next paragraph, so no merged
 (multi-group) row is ever produced and every output line corresponds to
-exactly one recomputable group.
+exactly one recomputable group. A rerun re-splits just the blank rows.
 
 ## Stage 3: tercet -> per-line
 
 Takes stage 2's group rows and further splits any group spanning more than
 one Italian line into one fragment per line, via the *same*
 `split_norton_span` function - each Italian line is simply passed as its
-own one-line group. A group whose split never validates aborts the canto,
-same convention as stage 2.
+own one-line group. A group whose split never validates is skipped (its
+rows stay blank for a later run to retry), same convention as stage 2; a
+group whose stage-2 row is still blank is skipped the same way, without an
+LLM call.
 
 ## `split_norton_span`: the shared rearranging-split primitive
 
@@ -175,8 +178,9 @@ position rather than a repeating 1..3:
    dropped, or substituted; only reordered and re-split.
 
 Up to `MAX_ATTEMPTS` (3) retries on any failure; if none validates, the
-caller aborts the canto rather than write a merged row (content is never
-dropped - the split is simply retried from scratch on a rerun).
+caller leaves the rows blank and moves on rather than write a merged row
+(content is never dropped - the split is simply retried from scratch on a
+rerun, which only touches the blank rows).
 
 ### No automatic punctuation restoration
 
@@ -268,8 +272,8 @@ robustness at larger scale, remain open (see MEMO.md "Open questions").
 1. Depends on LLM quality and instruction-following for the rearranging
    split - a weaker local model (`qwen3.6`) struggles with larger group
    counts in a single call (numbering drifts, duplicates/gaps appear) and
-   fails validation more often, aborting the canto; each split's retry
-   outcomes are visible in the run's log.
+   fails validation more often, leaving blank rows behind; each split's
+   retry outcomes are visible in the run's log.
 2. Word-multiset validation cannot catch a split that is grammatically
    broken or attributes words to a plausible-but-wrong fragment while still
    using the same words in the same relative order - only content
