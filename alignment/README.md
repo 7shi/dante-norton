@@ -180,6 +180,17 @@ rerun; deleting only a later-stage file (e.g. `<NN>-1.txt` while keeping
 
 ### Splits failing / cantos aborting
 
+Use [debug.py](debug.py) to investigate - its docstring is the step-by-step
+playbook (`show` a paragraph against the Italian original, `check` the stage
+files without the LLM, `words`-diff a failed response):
+
+    uv run python alignment/debug.py show inferno 16 -p 10
+    uv run python alignment/debug.py check inferno 16
+
+The most common cause is a wrong stage-1 line range at a paragraph boundary
+(e.g. Inferno 16's paragraph 10/11, see debug.py's docstring); fix
+`<NN>-ranges.tsv`, delete the affected stage outputs, and rerun.
+
 Backend choice matters more than any flag here - see [MEMO.md](MEMO.md) for
 measured differences between models. Stages 2/3 have no window/island to
 tune; a split that never validates aborts the canto (the retries are
