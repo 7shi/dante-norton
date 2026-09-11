@@ -180,9 +180,16 @@ rerun; deleting only a later-stage file (e.g. `<NN>-1.txt` while keeping
 
 ### Splits failing / cantos aborting
 
-Use [debug.py](debug.py) to investigate - its docstring is the step-by-step
-playbook (`show` a paragraph against the Italian original, `check` the stage
-files without the LLM, `words`-diff a failed response):
+Use [debug.py](debug.py) to investigate - start with `diagnose`, which reads
+the last failure from `<NN>.log`, cross-checks the files on disk, and shows
+where to dig next (for a stage-3 failure it prints the failing group's
+stage-2 row against the Italian lines, plus a range-vs-split verdict):
+
+    uv run python alignment/debug.py diagnose purgatorio 1
+
+Its docstring is the step-by-step playbook (`show` a paragraph against the
+Italian original, `check` the stage files without the LLM, `rows` a failing
+group, `words`-diff a failed response):
 
     uv run python alignment/debug.py show inferno 16 -p 10
     uv run python alignment/debug.py check inferno 16
