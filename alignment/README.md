@@ -140,7 +140,9 @@ line spanning multiple Italian lines, rather than dropping text - so
 `<NN>-3.txt` / `<NN>-1.txt` may have fewer lines than the canto's tercet /
 line count when this happens (check the log's merge counts).
 
-Progress and errors are also printed to the console as the script runs.
+Progress and errors are also printed to the console as the script runs, via
+a live `StatusLine` progress bar - see [STATUSLINE.md](STATUSLINE.md) for
+how that's wired.
 
 ### Resuming: each stage skips if its output file already exists
 
@@ -166,7 +168,8 @@ rerun; deleting only a later-stage file (e.g. `<NN>-1.txt` while keeping
 
 - Python 3.13+ (see `pyproject.toml`)
 - `dante_norton` library (parent directory)
-- `llm7shi` (dependency of `LLMClient`)
+- `llm7shi` (model access and progress display - see
+  [STATUSLINE.md](STATUSLINE.md))
 - An LLM backend: local (Ollama) or cloud (Gemini, OpenAI-compatible) with
   the relevant API key set
 
