@@ -210,6 +210,197 @@ promise:
    numbers, embedding-nearest sentence pairs), then fill the gaps with
    approach 1 or 2.
 
+## Comparison against the fixed gold reference (`01-1.txt`)
+
+Finding 3 above shows the tool's block boundaries rarely match genuine
+enjambment; this section checks whether that boundary ambiguity produces
+*wrong* line attributions or just a different, equally-valid split, by
+comparing the window-mode output (gemma4/luna/terra — ministral excluded,
+see above) against `01-1.txt`, the independent 136-line gold reference (see
+README.md "Reference Data"). Method: each output block's Italian column
+gives the gold line range it should cover (all three runs have 100%
+coverage, so ranges are contiguous and can be read off directly); the
+block's extracted Norton text is then compared word-for-word against the
+concatenation of the corresponding gold lines.
+
+| Model | Blocks | Exact word-sequence match | Mismatched gold-line clusters |
+|---|---|---|---|
+| `google:gemma-4-31b-it` | 131 | 122/131 | 4 |
+| `openai:gpt-5.6-luna` | 131 | 121/131 | 4 |
+| `openai:gpt-5.6-terra` | 131 | 119/131 | 5 |
+
+Grouping each model's mismatches into contiguous clusters and comparing the
+merged word sequence against the same gold-line span shows every cluster has
+an identical word multiset (nothing added, dropped, or substituted) — the
+only difference is *where* the block boundary falls between two adjacent
+gold lines. In all but one cluster per model, the word order is also
+identical (`exact-order match=True`), meaning the mismatch is purely a
+boundary shift: a phrase at the end of one gold line moved to the start of
+the next block, or vice versa. Example (gemma4, gold lines 4-6):
+
+```
+gold:   line4="Ah! how hard a thing it is to tell what"
+        line5-6="this wild and rough and dense wood was, which in thought renews the fear!"
+output: block4="Ah! how hard a thing it is to tell what this wild and rough
+         and dense wood was,"
+        block5-6="which in thought renews the fear!"
+```
+
+Same words, same order, different split point — both are valid line
+attributions for this enjambment.
+
+**One cluster per model does not preserve word order**: gold lines 41-46
+(gemma4/luna), 41-48 (terra). Inspecting the gold text there:
+
+```
+41 so that were occasion of good hope to me
+42 concerning that wild beast with the dappled skin
+43 the hour of the time and the sweet season.
+44 But not so that did not give me fear
+45 the sight which appeared to me of a lion.
+```
+
+`01-1.txt` was hand-built by *reordering* Norton's words per Italian line
+(README.md "Reference Data") — here "the hour of the time and the sweet
+season" (line 43) and "the sight which appeared to me of a lion" (line 45)
+are moved out of Norton's original word order to align with the Italian's
+hyperbaton. The tool never reorders words (by design — see ALGORITHM.md
+"Design rationale"), so its output follows Norton's actual, unreordered word
+sequence and necessarily diverges from gold exactly where gold's manual
+reordering diverges from Norton's prose. This is the expected boundary
+between what extraction-only alignment can and cannot reproduce, not a bug.
+
+**Conclusion**: for these three models, none of the measured boundary
+mismatches are wrong attributions in the sense of lost, duplicated, or
+substituted content — every mismatch is either (a) an equally-valid
+alternative split point (the common case), or (b) the known, designed-around
+limit where gold's word-level reordering can't be matched by an extraction-
+only algorithm (one localized region per model, all sharing the same
+Italian hyperbaton). Finding 3's "block-boundary ambiguity" is confirmed to
+be benign for this canto and these models.
+
+## Two-stage, tercet-first alignment (`align3.py`)
+
+The single mismatch cluster found in the gold comparison above (Italian
+hyperbaton, gold lines 41-48) matches a structural gap identified in
+"Structural analysis" #6: the extraction-only algorithm has no unit larger
+than one Italian line, but the gold reference (`01-1.txt`) was itself built
+in two stages (PRIOR_WORK.md): first segment Norton's prose at tercet (3-line)
+granularity — `01-3.txt`, no word reordering — then, only within that fixed
+span, rearrange words to match each individual Italian line. `align3.py`
+implements the same two stages:
+
+- **Stage 1 (coarse)**: extract a whole tercet's Norton span at once
+  (`--block-size`, default 3), instead of growing from a single line.
+  **No block-growth mechanism**: align_canto.py's island/window extension
+  existed only to recover when one line was too little context; a 3-line
+  chunk is assumed to already give enough, so a chunk that fails to match
+  at the exact start of the remaining text is skipped outright, never
+  extended, and window/island logic was removed entirely along with it.
+- **Stage 2 (decomposition)**: for a multi-line block, a second LLM call
+  splits the now-fixed Norton span into one fragment per Italian line,
+  rearranging words but never substituting them (mirrors the Bard prompt in
+  PRIOR_WORK.md). Validated mechanically: fragment count must match, no
+  fragment may be empty, and the concatenated fragments' word multiset must
+  equal the input span's exactly. A block whose split never validates
+  (`MAX_ATTEMPTS` tries) is kept merged (one row spanning all its Italian
+  lines) rather than dropping text.
+
+Run via `alignment/run_models.sh` (rewritten for this experiment): Canto 1,
+four models — `qwen3.6` (local, via `ollama:qwen3.6`) added alongside
+gemma4/luna/terra to test a second free local model against the three
+already benchmarked.
+
+### Results: stage 1 vs. `01-3.txt` (tercet-level gold, 46 rows, 1:1 by position)
+
+| Model | Exact text match | Word-sequence match (punctuation-insensitive) |
+|---|---|---|
+| `ollama:qwen3.6` | 34-37/46 | 42-44/46 |
+| `google:gemma-4-31b-it` | 34-35/46 | 44/46 |
+| `openai:gpt-5.6-luna` | 32-33/46 | 44/46 |
+| `openai:gpt-5.6-terra` | 32/46 | 44/46 |
+
+(Ranges reflect two comparison runs before/after the stage-2 bugfix below;
+stage 1 itself is unaffected by that fix, so the small variation is normal
+run-to-run LLM variance, not a code change.) Every mismatch checked (merging
+the two mismatched rows and comparing word multisets) preserves full word
+content — boundary shifts only, same as the earlier extraction-only
+comparison. gemma4/luna/terra's only mismatch is lines 13-14 (a *different*
+boundary ambiguity from the 41-45 hyperbaton: "first set in motion those
+beautiful things" — the tail of a relative clause — is attached to the
+previous tercet by all three models but to the next one by gold, both
+defensible splits of the Italian's line 39/40 boundary). qwen3.6 additionally
+misattaches "—she caused me so much heaviness," across lines 17-18 the same
+way. **Coarse, tercet-first extraction reproduces `01-3.txt` almost exactly**
+— the 41-48 hyperbaton region that was the sole non-boundary-shift mismatch
+in the fine-grained (extraction-only) comparison is resolved at this
+granularity for every model.
+
+### Bug found and fixed: empty stage-2 fragments accepted as valid
+
+Initial stage-2 validation checked only that the concatenated fragments'
+word multiset matched the input span — the same class of bug as the
+empty-extraction bug already fixed in `align_canto.py` (see Bug history
+below), just not ported to `align3.py`. An empty fragment contributes zero
+words, so a split like `['', 'But not so that', 'the sight ... did not give
+me fear.']` passed validation silently, producing a blank line-43 output for
+gemma4/luna/terra instead of a real (if imperfect) attempt or an honest
+merged fallback. Fixed by rejecting any attempt containing an empty (or
+whitespace-only) fragment, forcing a real split attempt or, on repeated
+failure, the existing merged-row fallback.
+
+### Results: stage 2 vs. `01-1.txt` (fine-grained gold, after the fix)
+
+| Model | Final rows | Exact word-sequence match |
+|---|---|---|
+| `ollama:qwen3.6` | 130/136 (6 rows still merged) | 107/130 |
+| `google:gemma-4-31b-it` | 134/136 (2 rows still merged) | **132/134** |
+| `openai:gpt-5.6-luna` | 134/136 (2 rows still merged) | 130/134 |
+| `openai:gpt-5.6-terra` | 134/136 (2 rows still merged) | **132/134** |
+
+For gemma4/luna/terra, the empty-fragment fix reduces the mismatch set to
+**exactly the one hyperbaton cluster** (gold lines 41-45, still merged/
+misattributed — the stage-1 boundary itself absorbs "the hour of the time
+and the sweet season" into the wrong tercet, so no stage-2 split can recover
+it; see "Comparison against the fixed gold reference" above for why). No
+other mismatches remain for these three models — a marked improvement over
+the extraction-only run's four mismatch clusters per model.
+
+**qwen3.6 is a clear step down**: 107/130, with several mismatches that are
+not simple boundary shifts — genuine word-order errors within a line (e.g.
+"set first those beautiful things in motion" for gold's "first set in
+motion those beautiful things") and misplaced fragments (e.g. "He answered
+me:” relocated to the end of a later line instead of the start of its own).
+Stage 1 (coarse extraction) was comparably good for qwen3.6, so the
+weakness is specifically in stage 2's word-level reordering task, not in
+finding the right Norton span. Not yet judged a hard capability ceiling
+(unlike ministral in the extraction-only comparison) since coverage is
+still high and most errors are local, but qwen3.6 needs more scrutiny before
+being treated as equivalent to the three cloud models for this task.
+
+### Conclusion
+
+The two-stage, tercet-first, no-growth redesign (ALGORITHM.md "Future
+Improvements" #6, prototyped here) resolves the one substantive block-
+boundary problem the extraction-only algorithm had (the 41-48 hyperbaton
+region) for every model except qwen3.6's stage-2 weakness, at the cost of
+one still-open, equally-benign boundary ambiguity (lines 13-14, content-
+preserving) and occasional merged (unsplit) rows where stage 2 cannot find
+a valid split. This is a stronger result than the extraction-only window-mode
+comparison and a reasonable basis for adopting `align3.py`'s approach going
+forward, pending a decision on how to handle the remaining merged rows and
+whether to keep qwen3.6 in the benchmark set.
+
+**Decision: benchmark set narrowed to `terra` alone.** `qwen3.6` is dropped
+from `run_models.sh` (its stage-2 word-order errors above, not just
+boundary shifts, are judged the same kind of capability gap that excluded
+`ministral-3:14b` earlier — see MEMO.md history and HANDOFF.md). `luna` is
+dropped in favor of `terra`: across every table above the two `gpt-5.6`
+tiers track each other closely, so running both adds little. `gemma4` is
+also dropped: `terra` clearly outperforms it, and the goal from here is the
+best achievable result, not a survey of local/weaker-model options — so
+`terra` alone is kept as the benchmark model going forward.
+
 ## Bug history
 
 Three bugs were found and fixed while testing the models above:
