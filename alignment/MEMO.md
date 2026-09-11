@@ -401,6 +401,107 @@ also dropped: `terra` clearly outperforms it, and the goal from here is the
 best achievable result, not a survey of local/weaker-model options — so
 `terra` alone is kept as the benchmark model going forward.
 
+## Whole-canto paragraph-range identification (`align_ranges.py`)
+
+Before reaching for `segments/*.jsonl` (external, scene-boundary line ranges
+imported from dante-commentary/dante-gemini-25 - see repo README.md) as an
+intermediate granularity between tercets and the whole canto, tried a
+simpler alternative: a single LLM call over the *entire* canto that only
+identifies, for each Norton paragraph, which range of Italian lines it
+corresponds to - no text extraction, no verbatim matching, just a coarse
+line-range correspondence. Implemented in the new `align_ranges.py` (a
+separate script from `align3.py`, not a mode of it). Norton's own paragraph
+breaks are used as the "lines" on the Norton side (6 paragraphs for Canto 1,
+summary paragraph excluded), per user decision - no sentence-splitting or
+fixed-width wrapping needed.
+
+The mapping is validated mechanically (`validate_ranges`): paragraph numbers
+must match expectation, ranges must be contiguous and in order, the first
+must start at line 1, and the last must end at the canto's total line count
+- retried up to `MAX_ATTEMPTS` (3) on failure.
+
+### First result: `ollama:qwen3.6`, Canto 1
+
+Smoke-tested with a local model (not the `terra` benchmark - `OPENAI_API_KEY`
+was not set in this environment) via:
+
+```bash
+uv run alignment/align_ranges.py 1 -o alignment/output/canto_01-qwen36-ranges.log --model ollama:qwen3.6
+```
+
+Ground truth was computed independently from `01-3.txt` (which preserves
+Norton's original word order - only line breaks were added, per
+README.md "Reference Data" - so it can be matched word-for-word against the
+Norton paragraphs to derive exact tercet-aligned paragraph boundaries, no
+LLM needed for the ground truth itself):
+
+| Paragraph | True range | qwen3.6 range | Match |
+|---|---|---|---|
+| 2 | 1-27 | 1-**30** | off by one tercet (end) |
+| 3 | 28-36 | **31**-36 | off by one tercet (start) |
+| 4 | 37-60 | 37-60 | exact |
+| 5 | 61-78 | 61-78 | exact |
+| 6 | 79-135 | 79-135 | exact |
+| 7 | 136-136 | 136-136 | exact |
+
+4 of 6 paragraph boundaries exact on the first attempt (validation passed
+without a retry); the only miss shifts the paragraph 2/3 boundary by exactly
+one tercet (3 lines) - content-preserving in the sense that no line is lost,
+duplicated, or assigned to a paragraph two or more tercets away. Coverage
+(gapless, non-overlapping, 1-136) held on the first attempt. Promising for a
+first run with a non-benchmark local model in a single whole-canto call.
+
+### Result: `openai:gpt-5.6-terra`, Canto 1
+
+Run by the user (API key not available in the assistant's environment):
+
+```bash
+uv run alignment/align_ranges.py 1 -o alignment/output/canto_01-terra-ranges.log --model openai:gpt-5.6-terra
+```
+
+| Paragraph | True range | terra range | Match |
+|---|---|---|---|
+| 2 | 1-27 | 1-27 | exact |
+| 3 | 28-36 | 28-36 | exact |
+| 4 | 37-60 | 37-60 | exact |
+| 5 | 61-78 | 61-78 | exact |
+| 6 | 79-135 | 79-135 | exact |
+| 7 | 136-136 | 136-136 | exact |
+
+**All 6 paragraph boundaries exact**, first attempt, no retry needed - a
+clean result with the benchmark model, matching the ground truth derived
+from `01-3.txt` exactly.
+
+### Decision: `segments/*.jsonl` import reverted
+
+Per the plan stated when the segments were imported: since whole-canto
+range identification succeeded cleanly with the benchmark model (`terra`),
+the imported `segments/{inferno,purgatorio,paradiso}.jsonl` (external
+scene-boundary data, commit `cee5067`) are unnecessary and have been
+reverted. `align_ranges.py`'s single-call, whole-canto approach is kept
+instead - simpler (no external data dependency) and, on this one canto,
+matches ground truth exactly with `terra`.
+
+Still open: only Canto 1 tested so far with `terra` (single run); longer
+cantos (up to 160 lines / 5 paragraphs per `segments/inferno.jsonl`'s
+now-reverted data) are unverified, and the whole-canto approach could still
+run into the size problem the user originally flagged (canto丸ごとだとサイズが
+大き過ぎて誤動作の可能性) on those. If a future canto fails validation
+repeatedly, reintroducing a segment-based fallback (`git revert` of the
+revert, or a fresh import) remains an option.
+
+### Open questions
+
+- Test more cantos with `terra`, especially longer ones, before treating
+  whole-canto range identification as reliable in general (one canto is not
+  enough to rule out the size-related failure mode this was designed to
+  guard against).
+- Not yet decided how (or whether) this range mapping feeds into
+  `align3.py`'s extraction: as a fixed outer boundary that stage-1 tercet
+  chunks may not cross, as a coarser first-decomposition level (segment span
+  -> tercet spans -> per-line, extending align3's existing two-stage
+  decomposition by one level), or left as a standalone diagnostic.
+
 ## Bug history
 
 Three bugs were found and fixed while testing the models above:
