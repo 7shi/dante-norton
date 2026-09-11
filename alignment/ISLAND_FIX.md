@@ -1,7 +1,11 @@
 # Requirements: Make Island Detection Reachable
 
-Status: implemented in `align_canto.py`; acceptance criteria (section 6) not
-yet measured.
+Status: implemented in `align_canto.py`; acceptance criteria (section 6)
+measured. Criteria 1, 2, 5 passed (gemma4 92→136/136, Exceeded flat/down for
+gemma4/luna/terra). Criterion 3 (ministral) failed and ministral is dropped
+from future benchmark runs — see section 6 item 3. Criterion 4 passed for
+luna (Failed 7→5) but not terra (Failed 3→5); this small terra regression is
+unresolved and not yet judged.
 
 Implementation notes: the `#`-marker machinery (`is_block_complete()`) and the
 never-called `consume_matched_text()` were deleted rather than repaired, so R6
@@ -129,6 +133,11 @@ The extraction prompt passes only `norton_text[:500]` to the model
 unreachable regardless of this change. Out of scope here; note it if it shows
 up in the offset distribution from R8.
 
+**R8 result:** it does not show up. Max accepted offset across all four
+window-mode logs was 50 characters (11 words, gemma4) — nowhere near the
+500-char cutoff. Not a live concern for Canto 1; revisit if a later canto's
+offsets cluster higher.
+
 ## 6. Acceptance criteria
 
 Re-run Inferno Canto 1 in direct-comparison mode with the four models already
@@ -139,6 +148,13 @@ measured in MEMO.md, and compare against the recorded baseline:
 2. `google:gemma-4-31b-it`: "Not at beginning" rejects drop substantially from
    77, and coverage improves from 92/136 (68%).
 3. `ollama:ministral-3:14b`: coverage does not regress below 64/136 (47%).
+   **Result: regressed to 31/136 (23%), with Exceeded rising 10 → 15 —
+   criterion failed.** Root cause: under islands, a hallucination-prone model
+   repeatedly extends a block instead of getting rejected per-line, so
+   failures compound until MAX_BLOCK_LINES wipes out several contiguous
+   lines at once. Judged a ministral capability ceiling rather than a
+   tunable parameter; ministral is dropped from future benchmark runs (see
+   `run_models.sh`) rather than retuning the window for it.
 4. `openai:gpt-5.6-luna` / `gpt-5.6-terra`: coverage stays at 136/136, and the
    number of failed blocks does not increase (luna 7, terra 3).
 5. "Block exceeded" counts do not increase relative to baseline for any model
@@ -146,6 +162,16 @@ measured in MEMO.md, and compare against the recorded baseline:
 
 If criterion 5 fails, `W` is too large; retune from the R8 offset
 distribution before concluding the change is unsuccessful.
+
+**Result:** criterion 5 held for gemma4/luna/terra (Exceeded 6/0/0 → 0/0/0)
+but failed for ministral (10 → 15). Checked whether `W` was the cause per
+the instruction above: it was not — the per-model offset breakdown (see
+MEMO.md "Results: search-window mode") shows ministral's islands all sit at
+offset 7 words, and gemma4's at 1 and 11, all well inside even an 8-10 word
+window. Narrowing `W` would not have removed ministral's islands, only
+gemma4's legitimate offset-11 one. The rise in ministral's Exceeded count is
+attributed to the hallucination/block-growth interaction (criterion 3), not
+`W` being mistuned.
 
 ## 7. Expected outcome
 

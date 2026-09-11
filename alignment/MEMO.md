@@ -76,6 +76,69 @@ pattern: "Failed after 3 attempts", "Hallucination", "Empty extraction",
   The extra translation step costs one more LLM call per query and provides
   no measurable benefit.
 
+## Results: search-window mode (island fix, commit `82100e5`)
+
+Finding 1 below (island detection is dead code) was fixed by replacing the
+"must start at offset 0" prefix check with a search window: an extraction is
+accepted if it starts within `--window-words` (default 20) words of the
+current position, and a match starting past offset 0 now genuinely extends
+the block ("island") instead of being silently impossible. Re-run of Canto 1
+in this mode, via `alignment/run_models.sh 1 window`:
+
+| Model | Coverage | Blocks | Islands | Failed | Halluc | Empty | Window | Exceeded |
+|---|---|---|---|---|---|---|---|---|
+| `ollama:ministral-3:14b` | 31 / 136 (23%) | 16 | 6 | 99 | 169 | 127 | 8 | 15 |
+| `google:gemma-4-31b-it` | **136 / 136 (100%)** | 131 | 2 | 3 | 1 | 1 | 5 | 0 |
+| `openai:gpt-5.6-luna` | 136 / 136 (100%) | 131 | 0 | 5 | 10 | 3 | 0 | 0 |
+| `openai:gpt-5.6-terra` | 136 / 136 (100%) | 131 | 0 | 5 | 9 | 0 | 3 | 0 |
+
+Islands = span accepted past offset 0 (block extended by one line). Window =
+span rejected for starting too far in (`--window-words`). Exceeded = block
+skipped after `MAX_BLOCK_LINES` with no output. Compare against the direct
+comparison baseline above (same metrics, "Not at beginning" is this table's
+predecessor of Islands/Window).
+
+Accepted-offset distribution across all four logs (`grep -ho 'offset: [0-9]*
+words' alignment/output/canto_01-*-window.log | sort -n -k2 | uniq -c`):
+409 at 0 words, 2 at 1, 5 at 7, 1 at 11 — nearly all accepted spans start
+within a few words of the current position, so the default window of 20 is
+comfortably wide enough and was not tightened.
+
+Per-model breakdown of the non-zero offsets: gemma4 1 at 1 word, 1 at 11
+(its 2 islands); ministral 1 at 1, 5 at 7 (its 6 islands); luna/terra none.
+The largest accepted offset (11, gemma4) leaves ~45% headroom under the
+20-word cap, so the window is not admitting borderline-wide matches.
+Narrowing the window would not have prevented ministral's regression below
+either — all 5 of its problem islands sit at offset 7, well inside even an
+8-10 word window, while tightening that far would also cut gemma4's
+offset-11 island (the case this change was built to fix). The window width
+is not the lever for the ministral problem; see the hallucination-driven
+block-growth explanation above.
+
+### Observations (search-window)
+
+- **`gemma-4-31b-it` hits the target this change was built for**: coverage
+  92/136 (68%) → 136/136 (100%), and the Window column (5) is far below the
+  old "Not at beginning" count (77) it replaces. Its 77 old rejects were
+  genuinely unsatisfiable-prefix cases (Finding 2), and the search window
+  resolves almost all of them as islands or small in-window matches instead
+  of rejects.
+- **`gpt-5.6-luna` / `gpt-5.6-terra`** hold 100% coverage. luna's Failed
+  count improves (7 → 5). terra's rises slightly (3 → 5) — a small,
+  unexplained regression, not yet investigated.
+- **`ministral-3:14b` regresses badly**: coverage 64/136 (47%) → 31/136
+  (23%), and Exceeded rises 10 → 15 — the one metric the design explicitly
+  treats as a red flag (rejects converted into oversized, fully-skipped
+  blocks rather than genuinely resolved). Log inspection shows why: once an
+  island extends a block for this model, the extended, longer span is more
+  often hallucinated than reproduced verbatim, so the block keeps growing
+  and re-failing until `MAX_BLOCK_LINES` wipes out several contiguous lines
+  at once — a failure mode islands make *worse* for a model whose dominant
+  problem is hallucination, not word order. Judged a ministral capability
+  ceiling rather than a tunable parameter (see [ISLAND_FIX.md](ISLAND_FIX.md)
+  section 6 item 3); `ministral-3:14b` is dropped from `run_models.sh` and
+  future benchmark runs.
+
 ## Structural analysis: why even top-tier models fail
 
 The direct-comparison results hide a structural problem: even the strongest
@@ -96,6 +159,9 @@ can appear after it — `is_block_complete()` therefore returns True on
 extraction acceptance; the island mechanism, designed to handle
 Italian/English word-order divergence, is unreachable. The algorithm
 degenerates to greedy line-by-line prefix consumption.
+
+**Update:** fixed by the search-window change (commit `82100e5`); see
+"Results: search-window mode" above.
 
 ### Finding 2: "Not at beginning" rejects are structural, not model failures
 
