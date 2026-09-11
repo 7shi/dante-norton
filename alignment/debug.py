@@ -14,8 +14,10 @@ Read this when a canto fails. Symptom playbook:
   Reads the last "✗ Stage N failed" from <NN>.log, cross-checks the files
   on disk, and for a stage-3 failure shows the failing group's stage-2 row
   bilingually (it: Italian line, en: English row) with the next group -
-  the misplaced English usually sits there - plus a verdict: range problem
-  or stage-2 boundary mistake. Then follow the pointed-to step below.
+  the misplaced English sits in one of the neighbouring groups' rows,
+  next or previous - plus a verdict: range problem or stage-2 boundary
+  mistake, then stage-specific tips (this playbook, distilled). The steps
+  below are the details behind the tips.
 
 - "✗ Stage 2 ... could not be split after 3 attempts" or a row-count
   mismatch like "16-3.txt has 43 line(s) but 46 expected" usually means
@@ -25,19 +27,24 @@ Read this when a canto fails. Symptom playbook:
   leaves that group empty and the split can never validate.
 
 - "✗ Stage 3 ... group N/M (line(s) ...) could not be split after 3
-  attempts" with the model leaving the last line(s) empty usually means
-  the group's stage-2 row has no words for them: the stage-2 split drew
-  the group boundary one sentence too late (Norton punctuation differs
-  from the Italian, e.g. ':' repunctuated as '.'). The ranges are fine
-  here - the paragraph's words all match, so `check` stays green. See
-  steps 5-6.
+  attempts" with the model leaving line(s) empty usually means the
+  group's stage-2 row has no words for them: one Norton sentence
+  straddles the two rows because the stage-2 split drew the boundary at
+  Norton's punctuation while the Italian tercet boundary cuts the
+  sentence mid-way (Norton repunctuates, e.g. ':' as '.'). The mistake
+  goes either way - too late: the missing English opens the NEXT row
+  and the group's last line(s) go empty; too early: it closes the
+  PREVIOUS row and the first line goes empty. The ranges are fine here
+  - the paragraph's words all match, so `check` stays green. When every
+  attempt returns the same words, no valid split of the row exists and
+  rerunning as-is cannot succeed - fix the rows themselves (step 5).
 
 1. Find the failing paragraph in the console output or <NN>.log (e.g.
    "✗ Stage 2 failed: paragraph 10 could not be split after 3 attempts").
 
 2. Inspect that paragraph against the originals:
 
-       uv run python alignment/debug.py show inferno 16 -p 10
+        uv run python alignment/debug.py show <cantica> <NN> -p PARAGRAPH
 
    Prints the paragraph's range from <NN>-ranges.tsv, the Italian lines it
    covers (via dante-corpus) split into the same tercet groups with the
@@ -58,18 +65,11 @@ Read this when a canto fails. Symptom playbook:
    existing files (one contiguous run covering every paragraph whose range
    changed - an edited boundary touches the two paragraphs sharing it):
 
-        uv run python alignment/align.py purgatorio -c 1 -p 10-11
-
-   Real example - Inferno 16: the ranges said paragraph 10 = lines 79-90,
-   but Norton paragraph 10 ends at line 87 ("...seemed wings.") and lines
-   88-90 ("Un amen ... di partirsi.") belong to paragraph 11, whose text
-   opens with "Not an amen could have been said...". Paragraph 10's split
-   kept failing because its English had nothing for group 30 (lines 88-90).
-   Fix: 10 -> 79-87, 11 -> 88-105.
+         uv run python alignment/align.py <cantica> -c <NN> -p A-B
 
 4. Mechanically cross-check whatever is already on disk (no LLM):
 
-       uv run python alignment/debug.py check inferno 16
+        uv run python alignment/debug.py check <cantica> <NN>
 
    Validates the ranges TSV (contiguity/coverage) and cross-checks the
    <NN>-3.txt / <NN>-1.txt row counts (blank rows are reported as pending
@@ -81,28 +81,42 @@ Read this when a canto fails. Symptom playbook:
 5. Eyeball the failing group - its Italian lines, the stage-2 row claiming
    to cover them (from <NN>-3.txt), and the stage-3 rows (from <NN>-1.txt):
 
-       uv run python alignment/debug.py rows purgatorio 1 -g 29
+        uv run python alignment/debug.py rows <cantica> <NN> -g GROUP
 
-   Filter with -p instead of -g to walk a whole paragraph. If the stage-2
-   row has no words for the group's last Italian line(s), it is a stage-2
-   boundary mistake: re-split the affected paragraphs with -p (step 3's
-   commands), or blank the paragraph's rows in <NN>-3.txt / <NN>-1.txt and
-   rerun. The range itself is only wrong if `show` (step 2) shows a
-   boundary mismatch.
+   Filter with -p instead of -g to walk a whole paragraph - neighbouring
+   groups included, since the misplaced English sits in one of their
+   rows. A stage-2 row with no words for the group's last (or first)
+   Italian line(s) is a stage-2 boundary mistake. The range itself is
+   only wrong if `show` (step 2) shows a boundary mismatch.
 
-   Real example - Purgatorio 1: stage 3 kept failing on group 29 (lines
-   79-81) with an empty fragment for line 81, three times identically. Its
-   stage-2 row ended at "...thou hold her." (Norton turns the Italian ':'
-   into '.'), and line 81's words ("For her love, then, incline thyself to
-   us;") sat in the next group's row. The paragraph's words all matched on
-   disk, so `check` was green. Fix: align.py purgatorio -c 1 -p 10-11.
+   Fixes, in increasing order of blast radius:
+
+   - Hand-edit <NN>-3.txt: move the misplaced English fragment - exactly
+     the words the failing row is short of - across the two adjacent
+     rows (a move, never a rewrite: each paragraph's word total must
+     stay equal to its Norton text; `check` after the edit confirms
+     it). Then blank the stage-3 rows of BOTH touched groups in
+     <NN>-1.txt - the neighbour's kept rows still carry the fragment
+     and would double it in the per-paragraph word check - and rerun;
+     stage 3 re-splits exactly the blank groups. Blanking by an
+     explicit row range, e.g.
+     `sed -i 'A,Bs/.*/ /' alignment/<cantica>/<NN>-1.txt`, beats
+     hand-editing empty lines (a row silently added or dropped shifts
+     every later line by one).
+
+   - Re-split the affected paragraphs with -p (step 3's commands), or
+     blank the paragraph's rows in <NN>-3.txt / <NN>-1.txt and rerun:
+     simpler, but the LLM redraws every boundary in the paragraph at
+     temperature 1.0, so currently-good rows can change too - prefer it
+     when several groups in one paragraph are tangled, not for a single
+     straddling sentence.
 
 6. Word-diff one split response (per-group/line word counts plus
    missing/extra words):
 
-       uv run python alignment/debug.py words inferno 16 -p 10 \
-           --response '27 "If other times..." ...
-                       28 Therefore, ...'
+        uv run python alignment/debug.py words <cantica> <NN> -p PARAGRAPH \
+            --response '<GROUP> ...fragment...
+                        <GROUP> ...fragment...'
 
    --response may be a `response: '...'` line copied straight out of
    <NN>.log; omit it to read the numbered lines from stdin instead. A
@@ -113,10 +127,10 @@ Read this when a canto fails. Symptom playbook:
    fragments reproduce the row but a line is still empty, the command says
    whether the range or the stage-2 split is at fault):
 
-       uv run python alignment/debug.py words purgatorio 1 -g 29 \
-           --response '79 of thy Marcia, who in her look still prays thee,
-                       80 O holy breast, that for thine own thou hold her.
-                       81'
+        uv run python alignment/debug.py words <cantica> <NN> -g GROUP \
+            --response '<LINE> ...
+                        <LINE> ...
+                        <LINE>'
 
 The checks reuse align.py's own helpers (imported, not duplicated), so
 what `check` accepts is exactly what align.py's resume path accepts.
@@ -301,7 +315,8 @@ def cmd_rows(args: argparse.Namespace) -> None:
     Per group: the Italian lines, the stage-2 row that claims to cover
     them, and the stage-3 rows on disk - the view for eyeballing a split
     that keeps failing. A stage-2 row whose words stop short of the
-    group's last Italian line(s) is a stage-2 boundary mistake.
+    group's last (or first) Italian line(s) is a stage-2 boundary
+    mistake.
     """
     ctx = CantoContext(args.cantica, args.canto, args.block_size)
     if ctx.ranges is None:
@@ -633,12 +648,72 @@ def paragraph_span(entries, serial: int) -> str:
     return str(serial)
 
 
+def print_tips(stage: int) -> None:
+    """
+    The docstring playbook, distilled: what the failing stage's symptom
+    means and the fixes in order of blast radius - the general case only
+    (no per-canto history), printed by `diagnose` after the verdict.
+    """
+    tips = {
+        1: [
+            "Stage 1 (the ranges call) failed on its own: just rerun - it is "
+            "skipped only while <NN>-ranges.tsv already exists.",
+        ],
+        2: [
+            "A stage-2 split that never validates usually means a wrong "
+            "stage-1 range: the Norton paragraph has no words for the "
+            "range's last group, so the model leaves that group empty and "
+            "the split can never pass. `show -p PARAGRAPH` lines the "
+            "boundaries up: the Norton text must start at the range's first "
+            "Italian line's content and end at its last, and the next "
+            "paragraph must pick up right where it ends.",
+            "Fix a wrong range by editing <NN>-ranges.tsv "
+            "(paragraph<TAB>start<TAB>end, contiguous, no gaps/overlaps) and "
+            "re-splitting the affected paragraphs with -p, or delete "
+            "<NN>-3.txt / <NN>-1.txt to regenerate both stages.",
+            "A stage file with the wrong row count is stale - written before "
+            "a ranges fix or a --block-size change; `check` names it: delete "
+            "it and rerun.",
+        ],
+        3: [
+            "An empty fragment means the group's stage-2 row has no words "
+            "for that Italian line: one Norton sentence straddles the two "
+            "rows - a stage-2 boundary mistake. While `check` stays green "
+            "(every Norton word sits in some row), the ranges are fine.",
+            "The misplaced English sits in a neighbouring row: a boundary "
+            "drawn too late opens the NEXT row with it (the group's last "
+            "line(s) go empty); drawn too early it closes the PREVIOUS row "
+            "(the first line goes empty). `rows -p PARAGRAPH` shows both.",
+            "Attempts that return the same words every time mean no valid "
+            "split of the row exists - rerunning as-is cannot succeed.",
+            "Deterministic fix: move the misplaced fragment across the two "
+            "rows in <NN>-3.txt (a move, never a rewrite: each paragraph's "
+            "word total must stay equal to its Norton text; `check` after "
+            "the edit confirms), blank the stage-3 rows of BOTH touched "
+            "groups in <NN>-1.txt (e.g. sed -i 'A,Bs/.*/ /' "
+            "alignment/<cantica>/<NN>-1.txt), and rerun - stage 3 re-splits "
+            "exactly the blank groups.",
+            "Or re-split the paragraph with -p: simpler, but the LLM redraws "
+            "every boundary in it at temperature 1.0, so currently-good rows "
+            "can change too - prefer it when several groups in one paragraph "
+            "are tangled, not for a single straddling sentence.",
+        ],
+    }.get(stage, [])
+    if not tips:
+        return
+    print("\nTips (the docstring playbook, distilled):")
+    for tip in tips:
+        print(textwrap.fill(tip, width=WIDTH, initial_indent="  - ",
+                            subsequent_indent="    ", break_on_hyphens=False))
+
+
 def diagnose_group(ctx: CantoContext, entries, serial: int,
                    fragments: Dict[int, str]) -> None:
     """
     The stage-3 failure view: the failing group's stage-2 row bilingually
-    (with the next group's, where the misplaced English usually sits), the
-    log's last attempt per line, and the range-vs-stage-2 verdict.
+    (with the next group's; the misplaced English can equally sit in the
+    previous row - `rows -p` shows both), the log's last attempt per
+    line, and the range-vs-stage-2 verdict.
     """
     entry = next(((r, s, gs) for r, s, gs in entries
                   if s <= serial < s + len(gs)), None)
@@ -729,8 +804,10 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     look at first - no LLM calls. Reads the failure from <NN>.log when
     present, cross-checks the files on disk (see `check`), and for a
     stage-3 failure shows the failing group's stage-2 row bilingually with
-    the next group's - the misplaced English usually sits there - plus a
-    range-vs-stage-2 verdict and a ready-to-run `-p` fix command.
+    the next group's - the misplaced English sits in one of the
+    neighbouring rows, previous or next - plus a range-vs-stage-2 verdict,
+    a ready-to-run `-p` fix command, and the stage's tips (print_tips -
+    the docstring playbook, distilled).
     """
     ctx = CantoContext(args.cantica, args.canto, args.block_size)
     print(f"Diagnosing {args.cantica} {args.canto:02d} (block size {ctx.block_size})")
@@ -774,6 +851,8 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
             print("  (could not parse the failing paragraph from the detail - use `show`)")
     else:
         print("  (stage-1 failure - inspect the ranges with `show`)")
+    print()
+    print_tips(stage)
     sys.exit(1)
 
 
