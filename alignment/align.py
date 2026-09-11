@@ -33,7 +33,10 @@ side, so a skipped stage's line groups are recomputed deterministically
 (assuming no merge fallback) and cross-checked against the loaded file's
 row count; a mismatch aborts with a message to delete the file and
 regenerate. Delete any of the three files to force that stage (and any
-stage after it that depends on newly generated input) to rerun.
+stage after it that depends on newly generated input) to rerun. When all
+three files already exist, the whole canto is skipped with a single
+console line after the same row-count cross-checks - no progress bar and
+no per-output listing.
 
 Progress display follows dante-corpus's ARCHITECTURE.md §4, mirroring
 skel/skel.py's driver_build.py: one `llm7shi.statusline.StatusLine` for the
@@ -647,6 +650,42 @@ def run_stage3(args: argparse.Namespace, ui: StatusLine, group_rows: List[FinalR
     return rows, covered_lines, total_lines
 
 
+def load_skipped_tercets(args: argparse.Namespace, ui: StatusLine,
+                         italian_lines: List[ItalianLine], ranges: List[ParagraphRange],
+                         tercet_path: Path) -> List[FinalRow] | None:
+    """
+    Reconstruct a skipped stage 2's rows from `<NN>-3.txt`, cross-checking
+    the row count against the deterministic recomputation (see
+    expected_tercet_groups). Returns None (after reporting) on a mismatch.
+    """
+    expected_groups = expected_tercet_groups(italian_lines, ranges, args.block_size)
+    texts = tercet_path.read_text(encoding='utf-8').splitlines()
+    if len(texts) != len(expected_groups):
+        notify(ui, f"✗ {tercet_path} has {len(texts)} line(s) but {len(expected_groups)} "
+              f"expected for block-size {args.block_size} (a previous merge-fallback row, "
+              f"or a different --block-size, may be the cause) - delete the file to regenerate",
+              error=True)
+        return None
+    return [FinalRow(g, t) for g, t in zip(expected_groups, texts)]
+
+
+def load_skipped_lines(ui: StatusLine, tercet_rows: List[FinalRow],
+                       line_path: Path) -> List[str] | None:
+    """
+    Load a skipped stage 3's rows from `<NN>-1.txt`, cross-checking the row
+    count against the group rows' total Italian line count. Returns None
+    (after reporting) on a mismatch.
+    """
+    expected_line_count = sum(len(row.italian_lines) for row in tercet_rows)
+    texts = line_path.read_text(encoding='utf-8').splitlines()
+    if len(texts) != expected_line_count:
+        notify(ui, f"✗ {line_path} has {len(texts)} line(s) but {expected_line_count} "
+              f"expected (a previous merge-fallback row may be the cause) - "
+              f"delete the file to regenerate", error=True)
+        return None
+    return texts
+
+
 def align_canto(cantica: str, canto: int, args: argparse.Namespace, n_cantos: int,
                 ui: StatusLine) -> None:
     """
@@ -674,6 +713,19 @@ def align_canto(cantica: str, canto: int, args: argparse.Namespace, n_cantos: in
         log_print()
 
         italian_lines = load_italian_lines(cantica, canto)
+
+        if ranges_path.exists() and tercet_path.exists() and line_path.exists():
+            ranges = load_ranges_tsv(str(ranges_path))
+            tercet_rows = load_skipped_tercets(args, ui, italian_lines, ranges, tercet_path)
+            if tercet_rows is None:
+                return
+            line_texts = load_skipped_lines(ui, tercet_rows, line_path)
+            if line_texts is None:
+                return
+            notify(ui, f"✓ {cantica.capitalize()} {canto}/{n_cantos}: all stages skipped "
+                  f"(output files already exist, row counts verified)")
+            return
+
         paragraphs = load_norton_paragraphs(norton_file)
 
         label = f"{cantica.capitalize()} {canto}/{n_cantos}"
@@ -691,15 +743,9 @@ def align_canto(cantica: str, canto: int, args: argparse.Namespace, n_cantos: in
                 notify(ui, f"✓ Stage 1 complete: {len(ranges)} paragraph ranges")
 
             if tercet_path.exists():
-                expected_groups = expected_tercet_groups(italian_lines, ranges, args.block_size)
-                texts = tercet_path.read_text(encoding='utf-8').splitlines()
-                if len(texts) != len(expected_groups):
-                    notify(ui, f"✗ {tercet_path} has {len(texts)} line(s) but {len(expected_groups)} "
-                          f"expected for block-size {args.block_size} (a previous merge-fallback row, "
-                          f"or a different --block-size, may be the cause) - delete the file to regenerate",
-                          error=True)
+                tercet_rows = load_skipped_tercets(args, ui, italian_lines, ranges, tercet_path)
+                if tercet_rows is None:
                     return
-                tercet_rows = [FinalRow(g, t) for g, t in zip(expected_groups, texts)]
                 notify(ui, f"✓ Stage 2 skipped: {tercet_path} already exists ({len(tercet_rows)} rows loaded)")
             else:
                 tercet_rows, _, _ = run_stage2(args, ui, italian_lines, ranges, dict(paragraphs),
@@ -707,14 +753,10 @@ def align_canto(cantica: str, canto: int, args: argparse.Namespace, n_cantos: in
                 write_lines(tercet_rows, str(tercet_path))
 
             if line_path.exists():
-                expected_line_count = sum(len(row.italian_lines) for row in tercet_rows)
-                texts = line_path.read_text(encoding='utf-8').splitlines()
-                if len(texts) != expected_line_count:
-                    notify(ui, f"✗ {line_path} has {len(texts)} line(s) but {expected_line_count} "
-                          f"expected (a previous merge-fallback row may be the cause) - "
-                          f"delete the file to regenerate", error=True)
+                line_texts = load_skipped_lines(ui, tercet_rows, line_path)
+                if line_texts is None:
                     return
-                notify(ui, f"✓ Stage 3 skipped: {line_path} already exists ({len(texts)} rows loaded)")
+                notify(ui, f"✓ Stage 3 skipped: {line_path} already exists ({len(line_texts)} rows loaded)")
             else:
                 line_rows, _, _ = run_stage3(args, ui, tercet_rows, args.test, prog)
                 write_lines(line_rows, str(line_path))
