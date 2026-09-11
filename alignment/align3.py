@@ -4,7 +4,7 @@ Norton text, one per fixed-size group of Italian lines, using the paragraph's
 Italian line range already identified by align_ranges.py.
 
 This is stage 2 of the three-level paragraph -> tercet -> line pipeline (see
-HANDOFF.md "Next planned task"). Unlike the earlier extraction-based
+ALGORITHM.md). Unlike the earlier extraction-based
 align3.py, this never extracts or verbatim-matches Norton text: the
 paragraph's line range is already known (from align_ranges.py's output), so
 this only needs to REARRANGE the paragraph's own words into `block_size`-line
@@ -151,7 +151,7 @@ def chunk_lines(lines: List[ItalianLine], block_size: int) -> List[List[ItalianL
     Split a flat list of Italian lines into consecutive groups of
     `block_size` lines. The final group may be shorter when the line count
     is not a multiple of `block_size` (a paragraph's line range is not
-    guaranteed to be, in general - see HANDOFF.md).
+    guaranteed to be, in general).
     """
     return [lines[i:i + block_size] for i in range(0, len(lines), block_size)]
 

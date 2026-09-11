@@ -177,6 +177,54 @@ pattern: "Failed after 3 attempts", "Hallucination", "Empty extraction",
   The extra translation step costs one more LLM call per query and provides
   no measurable benefit.
 
+## Design: island/search-window fix (formerly `ISLAND_FIX.md`)
+
+Requirements doc for the fix below, condensed here (the standalone file has
+been removed).
+
+**Cause of the dead-code problem** (Finding 1 above): the extraction prompt
+told the model to "Start from the very beginning of the Norton text", and
+validation only accepted an extraction that was an exact prefix
+(`norton_text.startswith(extracted)`). Since `is_block_complete()` (the
+island check) only ever saw such prefixes, replacing their words with `#`
+always produced one contiguous region at the start, so it returned `True`
+unconditionally - the island mechanism, meant to handle Italian/English
+word-order divergence, could never fire.
+
+**Design (only one span is live at a time, so no union-of-spans bookkeeping
+is needed):**
+- Replace the strict "must start at offset 0" check with a windowed
+  position check: accept an extraction starting at word offset `o` with
+  `0 <= o <= W` (`--window-words`, default 20); reject if not found at all
+  or if `o > W`.
+- `o == 0`: block complete. `0 < o <= W`: an *island* - text before the
+  span belongs to a later Italian line, so the block is extended by one
+  line and re-queried without consuming a retry attempt. Only parse
+  failures, empty/hallucinated extractions, length-ratio violations, and
+  `o > W` consume the 3-attempt retry budget.
+- Prompt change: drop "Start from the very beginning of the Norton text",
+  since it directly biased the model against the case this change targets.
+- The `#`-marker machinery (`is_block_complete()`, plus the never-called
+  `consume_matched_text()`) was deleted rather than repaired, replaced by a
+  direct offset comparison.
+- `--strict-prefix` (window = 0) kept as a baseline switch to A/B the
+  change against the original behavior on identical inputs.
+- Accepted offsets logged in words/chars so `W` could be tuned from data
+  rather than guessed; the known unaddressed limitation - the extraction
+  prompt only shows the model `norton_text[:500]`, so a correct span beyond
+  that cutoff is unreachable regardless of this fix - never showed up in
+  practice (max accepted offset across all four window-mode logs was 50
+  characters / 11 words).
+
+**Acceptance criteria** (checked against the results below): island events
+fire for at least one model; gemma4's "Not at beginning" rejects drop
+substantially with coverage improving from 92/136; ministral's coverage
+does not regress below 64/136; luna/terra hold 136/136 coverage without
+more failed blocks; and "Block exceeded" counts don't rise for any model
+(a rise would mean `W` is too large, converting rejects into skips instead
+of resolving them). All criteria held except ministral's coverage, which
+regressed to 31/136 - see below.
+
 ## Results: search-window mode (island fix, commit `82100e5`)
 
 Finding 1 below (island detection is dead code) was fixed by replacing the
@@ -236,8 +284,8 @@ block-growth explanation above.
   and re-failing until `MAX_BLOCK_LINES` wipes out several contiguous lines
   at once — a failure mode islands make *worse* for a model whose dominant
   problem is hallucination, not word order. Judged a ministral capability
-  ceiling rather than a tunable parameter (see [ISLAND_FIX.md](ISLAND_FIX.md)
-  section 6 item 3); `ministral-3:14b` is dropped from `run_models.sh` and
+  ceiling rather than a tunable parameter (see "Design: island/search-window
+  fix" above); `ministral-3:14b` is dropped from `run_models.sh` and
   future benchmark runs.
 
 ## Structural analysis: why even top-tier models fail
@@ -495,7 +543,7 @@ whether to keep qwen3.6 in the benchmark set.
 **Decision: benchmark set narrowed to `terra` alone.** `qwen3.6` is dropped
 from `run_models.sh` (its stage-2 word-order errors above, not just
 boundary shifts, are judged the same kind of capability gap that excluded
-`ministral-3:14b` earlier — see MEMO.md history and HANDOFF.md). `luna` is
+`ministral-3:14b` earlier — see MEMO.md history above). `luna` is
 dropped in favor of `terra`: across every table above the two `gpt-5.6`
 tiers track each other closely, so running both adds little. `gemma4` is
 also dropped: `terra` clearly outperforms it, and the goal from here is the

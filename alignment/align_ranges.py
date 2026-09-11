@@ -12,8 +12,8 @@ context. No text extraction, no verbatim-match validation - only the
 mechanical checks that the returned ranges are contiguous, in order, and
 cover the whole canto (see `validate_ranges`).
 
-Rationale (see MEMO.md "Two-stage, tercet-first alignment" and
-alignment/HANDOFF.md): before reaching for segments/*.jsonl (external,
+Rationale (see MEMO.md "Two-stage, tercet-first alignment"): before
+reaching for segments/*.jsonl (external,
 scene-boundary line ranges) as an intermediate granularity between tercets
 and the whole canto, try asking the LLM to do this whole-canto comparison
 directly. If that holds up, the imported segments are unnecessary; if the

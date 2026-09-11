@@ -21,13 +21,14 @@ See [ALGORITHM.md](ALGORITHM.md) for the full algorithm description,
 numbered-line output format, and Canto 1 results (near-exact match against
 both fixed gold references).
 
-Two earlier, superseded scripts remain for reference:
+Two earlier, superseded approaches are documented but no longer present as
+scripts:
 
-- **`align_canto.py`** (single-stage, extraction-only): for each Norton
-  paragraph, Italian lines are added to a block one at a time and an LLM
-  extracts the corresponding Norton span, with island detection via a
+- **`align_canto.py`** (single-stage, extraction-only, removed): for each
+  Norton paragraph, Italian lines are added to a block one at a time and an
+  LLM extracts the corresponding Norton span, with island detection via a
   search window to find block boundaries. See [MEMO.md](MEMO.md) (algorithm
-  summary near the top) and [ISLAND_FIX.md](ISLAND_FIX.md).
+  summary near the top, and "Design: island/search-window fix").
 - The original **`align3.py`** (two-stage, extraction-based tercet-first,
   now replaced): stage 1 extracted a whole tercet at once with a fixed
   block size, stage 2 split that fixed span into one fragment per Italian
@@ -42,8 +43,7 @@ MEMO.md's model-selection decision) - `ministral-3:14b`, `qwen3.6`,
 documented reasons.
 
 Two fixed gold references for Canto 1, `01-1.txt` (per-line) and `01-3.txt`
-(per-tercet), are also present in this directory - see "Reference Data"
-below.
+(per-tercet), were used during development - see "Reference Data" below.
 
 ## Usage
 
@@ -56,24 +56,11 @@ below.
 uv run alignment/align_ranges.py 1 \
     -o alignment/output/inferno-01-ranges.log --model openai:gpt-5.6-terra
 
-# Stages 2-3: paragraph -> tercet -> line, via run_models.sh
-alignment/run_models.sh 1
-```
-
-`run_models.sh [canto] [-- extra args...]` runs `align3.py` then `align1.py`
-for `openai:gpt-5.6-terra`, skipping any stage whose non-empty output TSV
-already exists (so a re-run only fills in what's missing), then prints a
-coverage summary. Extra args (e.g. `--block-size`, `--test`) are forwarded
-to both stages.
-
-To run a stage directly:
-
-```bash
-# align3.py: -i (ranges TSV) and -o (log path) are both required
+# Stage 2 (align3.py): -i (ranges TSV) and -o (log path) are both required
 uv run alignment/align3.py 1 -i alignment/output/inferno-01-ranges.tsv \
     -o alignment/output/inferno-01-3.log --model openai:gpt-5.6-terra
 
-# align1.py: -i (align3.py's group TSV) and -o are both required
+# Stage 3 (align1.py): -i (align3.py's group TSV) and -o are both required
 uv run alignment/align1.py 1 -i alignment/output/inferno-01-3.tsv \
     -o alignment/output/inferno-01-1.log --model openai:gpt-5.6-terra
 
@@ -86,39 +73,30 @@ The `--model` value is passed through to `llm7shi`; use an `ollama:`,
 `google:`, or `openai:` prefix to select the backend. Cloud backends need
 the corresponding API key set in the environment.
 
-### Legacy: `align_canto.py` (single-stage, extraction-only)
+### Removed: `align_canto.py` (single-stage, extraction-only)
 
-```bash
-uv run alignment/align_canto.py 1
-uv run alignment/align_canto.py 1 --max-lines 50
-uv run alignment/align_canto.py 1 --model google:gemini-2.5-flash
-uv run alignment/align_canto.py 1 --temperature 0.3
-uv run alignment/align_canto.py 1 --think
-uv run alignment/align_canto.py 1 --window-words 30
-uv run alignment/align_canto.py 1 --strict-prefix
-uv run alignment/align_canto.py 1 --translate  # not recommended, see MEMO.md
-```
-
-See MEMO.md's `align_canto.py` algorithm summary for what `--window-words`
-/ `--strict-prefix` / `--translate` do; this script is kept for reference
-but is not the recommended path.
+`align_canto.py` (superseded, single-stage, extraction-only) has been
+removed; see MEMO.md's algorithm summary and "Design: island/search-window
+fix" for its design and the `--window-words` / `--strict-prefix` /
+`--translate` flags it had, and git history for the source itself.
 
 ## Reference Data
 
-`01-1.txt` is a fixed, manually-edited gold reference for Canto 1: Norton's
+`01-1.txt` was a fixed, manually-edited gold reference for Canto 1: Norton's
 prose rearranged to exactly 136 lines (one per Italian line), preserving
 Norton's wording while reordering words to match Dante's line structure.
-`01-3.txt` is the intermediate, 46-line tercet-level version from the same
+`01-3.txt` was the intermediate, 46-line tercet-level version from the same
 source (line breaks only, mostly no word reordering - two spots were
 hand-corrected during this pipeline's development to reflect a genuine
-Italian hyperbaton, see ALGORITHM.md "Design rationale"). Both are carried
+Italian hyperbaton, see ALGORITHM.md "Design rationale"). Both were carried
 over from the `dante-la-el` project's Bard experiments
 (https://github.com/7shi/dante-la-el/tree/main/Inferno/Bard/en-norton) - see
 [PRIOR_WORK.md](../PRIOR_WORK.md) for how they were produced (Bard's own
 two-stage process: tercet-level segmentation, then per-line reordering with
 no word substitution - the same two stages the current pipeline automates,
 this time reliably) and [ALGORITHM.md](ALGORITHM.md) for the current
-pipeline's results against both.
+pipeline's results against both. Both files have since been removed from
+this directory; they only informed development-time validation.
 
 ## Output
 
@@ -139,8 +117,8 @@ Each log contains the full processing trace (per-paragraph/group progress,
 retries, rejections), a final detailed Italian+English listing, and summary
 counts (total rows/groups, how many were kept merged, coverage).
 
-`align_canto.py` writes to `alignment/output/canto_XX.log` instead - see
-MEMO.md for its log format.
+`align_canto.py` (removed) wrote to `alignment/output/canto_XX.log` instead -
+see MEMO.md for its log format.
 
 Progress and errors are also printed to the console as any script runs.
 
@@ -164,7 +142,7 @@ split for that canto, which was the deciding factor in dropping `qwen3.6`
 from the benchmark set once the pipeline needed 6+ groups in a single call
 (see MEMO.md).
 
-### `align_canto.py` matching failures
+### `align_canto.py` matching failures (historical, script removed)
 
 See [MEMO.md](MEMO.md) for measured coverage differences between models on
 the same canto. If a local/small model is struggling:

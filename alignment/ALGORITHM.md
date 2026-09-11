@@ -83,9 +83,9 @@ count. Retried up to `MAX_ATTEMPTS` (3) on failure.
 **Result (Canto 1, `openai:gpt-5.6-terra`):** all 6 paragraph ranges exact
 on the first attempt, matching a ground truth derived independently from
 `01-3.txt` (see MEMO.md "Whole-canto paragraph-range identification").
-Because this has been verified reliable, `run_models.sh` treats its output
-as a fixed input rather than regenerating it on every run - see "Files and
-running the pipeline" below.
+Because this has been verified reliable, it is treated as a fixed input
+rather than regenerated on every run - see "Files and running the pipeline"
+below.
 
 ## Stage 2: `align3.py` (paragraph -> tercet-sized group)
 
@@ -211,20 +211,17 @@ same base name, `.tsv` extension (e.g. `inferno-01-3.log` /
 uv run alignment/align_ranges.py 1 \
     -o alignment/output/inferno-01-ranges.log --model openai:gpt-5.6-terra
 
-# Stages 2-3 together
-alignment/run_models.sh 1
-# equivalent to:
+# Stages 2-3
 uv run alignment/align3.py 1 -i alignment/output/inferno-01-ranges.tsv \
     -o alignment/output/inferno-01-3.log --model openai:gpt-5.6-terra
 uv run alignment/align1.py 1 -i alignment/output/inferno-01-3.tsv \
     -o alignment/output/inferno-01-1.log --model openai:gpt-5.6-terra
 ```
 
-`run_models.sh` does not run stage 1 itself (see its header comment): the
-ranges TSV is treated as a fixed, already-verified input, not something to
-regenerate on every run. `--test` (stages 2/3 only; stage 1 makes a single
-whole-canto call already) processes just the first paragraph/group, for a
-quick local smoke test.
+Stage 1's ranges TSV is treated as a fixed, already-verified input, not
+something to regenerate on every run. `--test` (stages 2/3 only; stage 1
+makes a single whole-canto call already) processes just the first
+paragraph/group, for a quick local smoke test.
 
 ## Results (Canto 1, `openai:gpt-5.6-terra`)
 
@@ -298,5 +295,3 @@ robustness at larger scale, remain open (see MEMO.md "Open questions").
   range identification testing, and this pipeline's development notes.
 - [PRIOR_WORK.md](../PRIOR_WORK.md) - the original `dante-la-el` /
   Bard-based tercet-then-line reordering process this pipeline mirrors.
-- [ISLAND_FIX.md](ISLAND_FIX.md) - island/search-window design notes for
-  the superseded `align_canto.py`.

@@ -3,7 +3,7 @@ Split each tercet-sized (or smaller) Norton text group, as produced by
 align3.py, into one fragment per Italian line.
 
 This is stage 3 (final) of the three-level paragraph -> tercet -> line
-pipeline (see HANDOFF.md "Next planned task"). It reuses `split_norton_span`
+pipeline (see ALGORITHM.md). It reuses `split_norton_span`
 from align3.py unchanged, passing one-line groups (a special case of the
 grouped split align3.py already uses for paragraph -> tercet) - no new split
 logic is needed here.
