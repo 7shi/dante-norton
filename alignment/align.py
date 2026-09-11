@@ -437,7 +437,7 @@ number followed by a space and then the fragment (e.g. "{start_num} <fragment>")
                   f"{len(target_words)} words, {elapsed:.1f}s)", error=True)
             continue
 
-        notify(ui, f"    ✓ split accepted ({elapsed:.1f}s)")
+        log_print(f"    ✓ split accepted ({elapsed:.1f}s)")
         log_print(f"      fragments: {fragments}")
         return fragments
 
@@ -466,6 +466,7 @@ def split_paragraph(args: argparse.Namespace, ui: StatusLine, italian_lines: Lis
     position among the canto's paragraphs.
     """
     groups = chunk_lines(italian_lines, block_size)
+    ui.log("")
     notify(ui, f"Paragraph {para_num} ({index}/{total}): lines "
           f"{italian_lines[0].line_num}-{italian_lines[-1].line_num} -> {len(groups)} "
           f"group(s) (numbered {start_num}-{start_num + len(groups) - 1})")
@@ -492,7 +493,7 @@ def split_group(args: argparse.Namespace, ui: StatusLine, row: FinalRow,
         return [row]
 
     nums = ', '.join(str(l.line_num) for l in row.italian_lines)
-    notify(ui, f"Group ({index}/{total}): line(s) {nums}")
+    log_print(f"Group ({index}/{total}): line(s) {nums}")
     log_print(f"  Norton text: {row.text}")
     groups = [[line] for line in row.italian_lines]
     # Number by each line's actual (canto-wide) line number - already a
