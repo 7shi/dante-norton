@@ -661,8 +661,7 @@ def main():
         description="Align Italian lines with Norton\"s English translation "
                     "(paragraph -> range -> tercet -> line, one LLM pipeline)")
     parser.add_argument("cantica", choices=["inferno", "purgatorio", "paradiso"], help="Cantica name")
-    parser.add_argument("-c", "--canto", type=int,
-                        help="Canto number, e.g. -c 1 (default: every canto of the cantica)")
+    parser.add_argument("-c", "--canto", metavar="SPEC", help=dante_corpus.api.CANTO_SPEC_HELP)
     parser.add_argument("-m", "--model", default="ollama:ministral-3:14b", help="LLM model to use")
     parser.add_argument("--temperature", type=float, default=1.0, help="LLM temperature (default: 1.0)")
     parser.add_argument("--think", action="store_true",
@@ -675,12 +674,11 @@ def main():
 
     args = parser.parse_args()
 
-    if args.canto is not None:
-        align_canto(args.cantica, args.canto, args)
-    else:
-        cantos = sorted(dante_corpus.cantos(args.cantica))
-        for canto in cantos:
-            align_canto(args.cantica, canto, args)
+    if err := dante_corpus.api.check_canto_spec([args.cantica], args.canto):
+        parser.error(err)
+
+    for canto in dante_corpus.api.select_cantos(args.cantica, args.canto):
+        align_canto(args.cantica, canto, args)
 
 
 if __name__ == '__main__':
