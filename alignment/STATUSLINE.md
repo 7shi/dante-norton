@@ -6,28 +6,20 @@
 design so a future change (or a similar script elsewhere in this repo) can
 follow the same shape without re-deriving it.
 
-## What changed
+## Model calls and progress display
 
-`align.py` used to call the model through `dante_norton.llm.LLMClient`, a
-thin wrapper around `llm7shi.compat.generate_with_schema` that printed
-progress lines straight to stdout/stderr with `print`. It now:
+`align.py` calls the model through `llm7shi.Client` directly, and drives an
+`llm7shi.statusline.StatusLine` (`ui`) for the whole run, giving a live Rich
+progress bar per canto plus a single console every human-facing line and
+every streamed model reply shares.
 
-- Calls the model through `llm7shi.Client` directly. `dante_norton/llm.py`
-  is no longer used by `align.py` (the module itself is untouched - nothing
-  else in this repo used it either).
-- Drives an `llm7shi.statusline.StatusLine` (`ui`) for the whole run, giving
-  a live Rich progress bar per canto plus a single console every
-  human-facing line and every streamed model reply shares.
-
-## Why `llm7shi.Client` instead of `LLMClient`
-
-`llm7shi.Client` already provides:
+`llm7shi.Client` provides:
 
 - A `file=` sink for streaming model output, which is exactly the hook
   `StatusLine` needs to keep streamed text from clobbering the live bar
   (`Client(..., file=ui.stream)`).
 - Its own quality-retry loop (empty replies, repetition, invalid JSON
-  against a schema) - `LLMClient` had none of this.
+  against a schema).
 
 `align.py`'s own `MAX_ATTEMPTS` retry loop still wraps every call, because
 it checks things `Client` cannot know about: mechanical range validity
@@ -38,9 +30,8 @@ independent and both matter.
 
 - **One `StatusLine` for the whole run** (`ui = StatusLine()` in `main()`),
   not one per canto. It is threaded through every function that needs to
-  print or call the model (`args: argparse.Namespace` and `ui: StatusLine`
-  are now the first two parameters almost everywhere `llm` used to be the
-  first).
+  print or call the model, with `args: argparse.Namespace` and
+  `ui: StatusLine` as the first two parameters.
 - **A fresh, disposable `Client` per attempt**, not a reused stateful one.
   Every call in this pipeline is single-shot (no multi-turn history to
   carry), so there is nothing a reused `Client` would buy here - this is
