@@ -132,13 +132,16 @@ Inferno Canto 1 -> `alignment/inferno/01-*`):
 - **`<NN>.log`**: the full processing trace of all three stages
   (per-paragraph/group progress, retries, rejections), a final
   Italian+English listing per stage, and summary counts (total rows/groups,
-  how many were kept merged, coverage). Unconditionally overwritten on every
-  run (gitignored via the repo root `.gitignore`'s `*.log`).
+  coverage). Unconditionally overwritten on every run (gitignored via the
+  repo root `.gitignore`'s `*.log`).
 
-A group or paragraph whose split never validates is kept as a single merged
-line spanning multiple Italian lines, rather than dropping text - so
-`<NN>-3.txt` / `<NN>-1.txt` may have fewer lines than the canto's tercet /
-line count when this happens (check the log's merge counts).
+A group or paragraph whose split never validates (after `MAX_ATTEMPTS`
+retries) aborts the canto rather than writing a merged line - so
+`<NN>-3.txt` / `<NN>-1.txt` never contain a row spanning multiple Italian
+lines, and their row counts always match the deterministic recomputation
+(a stage-2 file may still be shorter than the canto's line count when a
+paragraph's range is not a multiple of `--block-size`). Delete the failing
+stage's output file and rerun to retry the split.
 
 Progress and errors are also printed to the console as the script runs, via
 a live `StatusLine` progress bar - see [STATUSLINE.md](STATUSLINE.md) for
@@ -155,11 +158,11 @@ re-spending stage 1/2's calls.
 
 Because `<NN>-3.txt` and `<NN>-1.txt` carry no Italian side, a skipped
 stage's Italian line groups are recomputed deterministically from the
-ranges and `--block-size` (assuming no merge fallback happened) and
-cross-checked against the loaded file's row count; a mismatch (e.g. the
-file was produced by a run that hit a merge fallback, or with a different
-`--block-size`) aborts with a message rather than silently misaligning -
-delete the file and rerun to regenerate it. Delete any of the three files
+ranges and `--block-size` and cross-checked against the loaded file's row
+count; a mismatch (e.g. the file was produced with a different
+`--block-size`, or by an older version that kept merged rows) aborts with
+a message rather than silently misaligning - delete the file and rerun to
+regenerate it. Delete any of the three files
 to force that stage, and every stage after it whose input it feeds, to
 rerun; deleting only a later-stage file (e.g. `<NN>-1.txt` while keeping
 `<NN>-3.txt`) reruns just that stage.
@@ -175,14 +178,16 @@ rerun; deleting only a later-stage file (e.g. `<NN>-1.txt` while keeping
 
 ## Troubleshooting
 
-### Splits failing / falling back to merged rows
+### Splits failing / cantos aborting
 
 Backend choice matters more than any flag here - see [MEMO.md](MEMO.md) for
 measured differences between models. Stages 2/3 have no window/island to
-tune; check "kept merged" in the log - a high count means the model is
-struggling to produce a valid numbered split for that canto, which was the
-deciding factor in dropping `qwen3.6` from the benchmark set once the
-pipeline needed 6+ groups in a single call (see MEMO.md).
+tune; a split that never validates aborts the canto (the retries are
+visible in the log), so a model that often fails the numbered-split format
+leaves cantos unfinishable - which was the deciding factor in dropping
+`qwen3.6` from the benchmark set once the pipeline needed 6+ groups in a
+single call (see MEMO.md). Delete the failing stage's output file and
+rerun (ideally with a different model) to retry.
 
 ### `align_canto.py` matching failures (historical, script removed)
 

@@ -60,7 +60,7 @@ This project is licensed under [CC0 1.0 Universal](LICENSE) (Public Domain).
 
 ## Future Work
 
-- **Human review interface**: flag uncertain alignments (merge fallbacks) for manual review.
+- **Human review interface**: flag uncertain alignments for manual review.
 - **Cross-canto patterns**: statistics on alignment/translation choices across cantos.
 - **Alternative export formats** for the aligned output beyond the current `<NN>-1.txt`/`<NN>-3.txt` pair.
 

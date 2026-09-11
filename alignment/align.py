@@ -19,10 +19,8 @@ alignment/<cantica>/, canto-number-prefixed):
 - `<NN>-ranges.tsv`: paragraph<TAB>start_line<TAB>end_line, one row per
   Norton paragraph (stage 1).
 - `<NN>-3.txt`: one Norton fragment per line, one line per tercet-sized
-  group (stage 2). A group whose split never validated is kept merged as a
-  single line spanning multiple Italian lines.
-- `<NN>-1.txt`: same, one line per Italian line (stage 3), merged fallback
-  likewise possible.
+  group (stage 2).
+- `<NN>-1.txt`: same, one line per Italian line (stage 3).
 - `<NN>.log`: full processing trace (all three stages), printed to console
   as the script runs; unconditionally overwritten every run.
 
@@ -30,13 +28,15 @@ Each stage is skipped when its output file already exists: stage 1 loads
 `<NN>-ranges.tsv` instead of calling the LLM, and likewise for stages 2 and
 3 with their own output files - `<NN>-3.txt`/`<NN>-1.txt` carry no Italian
 side, so a skipped stage's line groups are recomputed deterministically
-(assuming no merge fallback) and cross-checked against the loaded file's
-row count; a mismatch aborts with a message to delete the file and
-regenerate. Delete any of the three files to force that stage (and any
-stage after it that depends on newly generated input) to rerun. When all
-three files already exist, the whole canto is skipped with a single
-console line after the same row-count cross-checks - no progress bar and
-no per-output listing.
+and cross-checked against the loaded file's row count; a mismatch aborts
+with a message to delete the file and regenerate. A split that fails to
+validate after MAX_ATTEMPTS attempts also aborts the canto, so no merged
+(multi-group) row is ever written and the row count always checks out.
+Delete any of the three files to force that stage (and any stage after it
+that depends on newly generated input) to rerun. When all three files
+already exist, the whole canto is skipped with a single console line
+after the same row-count cross-checks - no progress bar and no
+per-output listing.
 
 Progress display follows dante-corpus's ARCHITECTURE.md §4, mirroring
 skel/skel.py's driver_build.py: one `llm7shi.statusline.StatusLine` for the
@@ -313,12 +313,11 @@ def chunk_lines(lines: List[ItalianLine], block_size: int) -> List[List[ItalianL
 def expected_tercet_groups(italian_lines: List[ItalianLine], ranges: List[ParagraphRange],
                            block_size: int) -> List[List[ItalianLine]]:
     """
-    The stage-2 line groups a fresh run would produce for `ranges`, assuming
-    no merge fallback - used to resume from an existing `<NN>-3.txt` (which
-    carries no Italian side to reconstruct groups from) by recomputing the
-    same deterministic chunking. Does not account for a paragraph that was
-    actually kept merged on the run that produced the file; the caller must
-    cross-check the row count against this and bail out if they disagree.
+    The stage-2 line groups a fresh run would produce for `ranges` - used to
+    resume from an existing `<NN>-3.txt` (which carries no Italian side to
+    reconstruct groups from) by recomputing the same deterministic chunking.
+    The caller cross-checks the loaded file's row count against this and
+    bails out if they disagree.
     """
     groups = []
     for r in ranges:
@@ -444,24 +443,24 @@ number followed by a space and then the fragment (e.g. "{start_num} <fragment>")
         log_print(f"      fragments: {fragments}")
         return fragments
 
-    notify(ui, f"    ✗ Split failed after {MAX_ATTEMPTS} attempts - keeping merged", error=True)
+    notify(ui, f"    ✗ Split failed after {MAX_ATTEMPTS} attempts", error=True)
     return None
 
 
 class FinalRow(NamedTuple):
     """One row of output: a group of Italian lines and its Norton text."""
-    italian_lines: List[ItalianLine]  # >1 lines normally at stage 2, or on a merge fallback
+    italian_lines: List[ItalianLine]  # up to block-size lines at stage 2, exactly 1 at stage 3
     text: str
 
 
 def split_paragraph(args: argparse.Namespace, ui: StatusLine, italian_lines: List[ItalianLine],
                     para_num: int, norton_text: str, block_size: int, start_num: int,
-                    index: int, total: int) -> List[FinalRow]:
+                    index: int, total: int) -> List[FinalRow] | None:
     """
     Stage 2: split one Norton paragraph's text into tercet-sized (or smaller
-    trailing) groups matching its already-known Italian line range. Falls
-    back to a single merged row (the whole range) if the split never
-    validates.
+    trailing) groups matching its already-known Italian line range. Returns
+    None if the split never validates - the caller aborts the canto rather
+    than keeping a merged fallback row.
 
     `start_num` is this paragraph's first group's serial number in the
     canto-wide group numbering - the caller advances it by this paragraph's
@@ -481,16 +480,17 @@ def split_paragraph(args: argparse.Namespace, ui: StatusLine, italian_lines: Lis
 
     fragments = split_norton_span(args, ui, groups, norton_text, start_num)
     if fragments is None:
-        return [FinalRow(italian_lines, norton_text)]
+        return None
     return [FinalRow(group, fragment) for group, fragment in zip(groups, fragments)]
 
 
 def split_group(args: argparse.Namespace, ui: StatusLine, row: FinalRow,
-                index: int, total: int) -> List[FinalRow]:
+                index: int, total: int) -> List[FinalRow] | None:
     """
     Stage 3: split one group's Norton text into one fragment per Italian
     line. `index`/`total` are this group's position among the canto's
-    groups.
+    groups. Returns None if the split never validates - the caller aborts
+    the canto rather than keeping the merged row.
     """
     if len(row.italian_lines) == 1:
         return [row]
@@ -503,7 +503,7 @@ def split_group(args: argparse.Namespace, ui: StatusLine, row: FinalRow,
     # serial number, so no separate running counter is needed here.
     fragments = split_norton_span(args, ui, groups, row.text, start_num=row.italian_lines[0].line_num)
     if fragments is None:
-        return [row]
+        return None
     return [FinalRow([line], fragment) for line, fragment in zip(row.italian_lines, fragments)]
 
 
@@ -524,9 +524,9 @@ def format_final_rows(rows: List[FinalRow]) -> str:
 def write_lines(rows: List[FinalRow], path: str):
     """
     Write one line of English text per row - no Italian side, no
-    tab-separation. A merge-fallback row (spanning multiple Italian lines)
-    still contributes exactly one line, so the output may have fewer lines
-    than the canto's Italian line count.
+    tab-separation. Stage 2 rows may each cover up to block-size Italian
+    lines, so the output may have fewer lines than the canto's Italian line
+    count.
     """
     with open(path, 'w', encoding='utf-8') as f:
         for row in rows:
@@ -561,7 +561,7 @@ def run_stage1(args: argparse.Namespace, ui: StatusLine, italian_lines: List[Ita
 
 def run_stage2(args: argparse.Namespace, ui: StatusLine, italian_lines: List[ItalianLine],
               ranges: List[ParagraphRange], paragraphs: dict, block_size: int, test: bool,
-              prog=None) -> Tuple[List[FinalRow], int, int]:
+              prog=None) -> Tuple[List[FinalRow], int, int] | None:
     log_print("=" * 80)
     log_print("STAGE 2: paragraph -> tercet-sized group")
     log_print("=" * 80)
@@ -572,7 +572,6 @@ def run_stage2(args: argparse.Namespace, ui: StatusLine, italian_lines: List[Ita
         ranges = ranges[:1]
 
     rows: List[FinalRow] = []
-    merged_paragraphs = 0
     next_num = 1  # serial group number, canto-wide (never resets per paragraph)
     total_paragraphs = len(ranges)
     for index, r in enumerate(ranges, 1):
@@ -583,8 +582,11 @@ def run_stage2(args: argparse.Namespace, ui: StatusLine, italian_lines: List[Ita
         group_lines = italian_lines[r.start_line - 1:r.end_line]
         para_rows = split_paragraph(args, ui, group_lines, r.paragraph, paragraphs[r.paragraph],
                                     block_size, next_num, index, total_paragraphs)
-        if len(para_rows) == 1 and len(para_rows[0].italian_lines) > 1 and len(group_lines) > block_size:
-            merged_paragraphs += 1
+        if para_rows is None:
+            notify(ui, f"✗ Stage 2 failed: paragraph {r.paragraph} could not be split after "
+                  f"{MAX_ATTEMPTS} attempts - aborting canto", error=True)
+            log_print(f"FAILED: paragraph {r.paragraph} split never validated")
+            return None
         rows.extend(para_rows)
         next_num += len(chunk_lines(group_lines, block_size))
         log_print()
@@ -599,17 +601,15 @@ def run_stage2(args: argparse.Namespace, ui: StatusLine, italian_lines: List[Ita
     log_print(format_final_rows(rows))
     log_print()
     log_print(f"Total groups: {len(rows)}")
-    log_print(f"Paragraphs kept merged (split failed): {merged_paragraphs}")
     log_print(f"Coverage: {covered_lines}/{total_lines} lines")
     log_print()
 
-    notify(ui, f"✓ Stage 2 complete: {len(rows)} groups, "
-          f"coverage {covered_lines}/{total_lines}, merged {merged_paragraphs}")
+    notify(ui, f"✓ Stage 2 complete: {len(rows)} groups, coverage {covered_lines}/{total_lines}")
     return rows, covered_lines, total_lines
 
 
 def run_stage3(args: argparse.Namespace, ui: StatusLine, group_rows: List[FinalRow], test: bool,
-              prog=None) -> Tuple[List[FinalRow], int, int]:
+              prog=None) -> Tuple[List[FinalRow], int, int] | None:
     log_print("=" * 80)
     log_print("STAGE 3: tercet -> per-line")
     log_print("=" * 80)
@@ -620,14 +620,17 @@ def run_stage3(args: argparse.Namespace, ui: StatusLine, group_rows: List[FinalR
         group_rows = group_rows[:1]
 
     rows: List[FinalRow] = []
-    merged_groups = 0
     total_groups = len(group_rows)
     for index, group_row in enumerate(group_rows, 1):
         if prog is not None:
             prog.update(group_row.italian_lines[0].line_num)
         split_rows = split_group(args, ui, group_row, index, total_groups)
-        if len(split_rows) == 1 and len(split_rows[0].italian_lines) > 1:
-            merged_groups += 1
+        if split_rows is None:
+            nums = ', '.join(str(l.line_num) for l in group_row.italian_lines)
+            notify(ui, f"✗ Stage 3 failed: group {index}/{total_groups} (line(s) {nums}) could "
+                  f"not be split after {MAX_ATTEMPTS} attempts - aborting canto", error=True)
+            log_print(f"FAILED: group {index} (line(s) {nums}) split never validated")
+            return None
         rows.extend(split_rows)
         log_print()
 
@@ -641,12 +644,10 @@ def run_stage3(args: argparse.Namespace, ui: StatusLine, group_rows: List[FinalR
     log_print(format_final_rows(rows))
     log_print()
     log_print(f"Total rows: {len(rows)}")
-    log_print(f"Groups kept merged (split failed): {merged_groups}")
     log_print(f"Coverage: {covered_lines}/{total_lines} lines")
     log_print()
 
-    notify(ui, f"✓ Stage 3 complete: {len(rows)} rows, "
-          f"coverage {covered_lines}/{total_lines}, merged {merged_groups}")
+    notify(ui, f"✓ Stage 3 complete: {len(rows)} rows, coverage {covered_lines}/{total_lines}")
     return rows, covered_lines, total_lines
 
 
@@ -662,8 +663,7 @@ def load_skipped_tercets(args: argparse.Namespace, ui: StatusLine,
     texts = tercet_path.read_text(encoding='utf-8').splitlines()
     if len(texts) != len(expected_groups):
         notify(ui, f"✗ {tercet_path} has {len(texts)} line(s) but {len(expected_groups)} "
-              f"expected for block-size {args.block_size} (a previous merge-fallback row, "
-              f"or a different --block-size, may be the cause) - delete the file to regenerate",
+              f"expected for block-size {args.block_size} - delete the file to regenerate",
               error=True)
         return None
     return [FinalRow(g, t) for g, t in zip(expected_groups, texts)]
@@ -680,8 +680,7 @@ def load_skipped_lines(ui: StatusLine, tercet_rows: List[FinalRow],
     texts = line_path.read_text(encoding='utf-8').splitlines()
     if len(texts) != expected_line_count:
         notify(ui, f"✗ {line_path} has {len(texts)} line(s) but {expected_line_count} "
-              f"expected (a previous merge-fallback row may be the cause) - "
-              f"delete the file to regenerate", error=True)
+              f"expected - delete the file to regenerate", error=True)
         return None
     return texts
 
@@ -748,8 +747,11 @@ def align_canto(cantica: str, canto: int, args: argparse.Namespace, n_cantos: in
                     return
                 notify(ui, f"✓ Stage 2 skipped: {tercet_path} already exists ({len(tercet_rows)} rows loaded)")
             else:
-                tercet_rows, _, _ = run_stage2(args, ui, italian_lines, ranges, dict(paragraphs),
-                                               args.block_size, args.test, prog)
+                stage2 = run_stage2(args, ui, italian_lines, ranges, dict(paragraphs),
+                                    args.block_size, args.test, prog)
+                if stage2 is None:
+                    return
+                tercet_rows, _, _ = stage2
                 write_lines(tercet_rows, str(tercet_path))
 
             if line_path.exists():
@@ -758,7 +760,10 @@ def align_canto(cantica: str, canto: int, args: argparse.Namespace, n_cantos: in
                     return
                 notify(ui, f"✓ Stage 3 skipped: {line_path} already exists ({len(line_texts)} rows loaded)")
             else:
-                line_rows, _, _ = run_stage3(args, ui, tercet_rows, args.test, prog)
+                stage3 = run_stage3(args, ui, tercet_rows, args.test, prog)
+                if stage3 is None:
+                    return
+                line_rows, _, _ = stage3
                 write_lines(line_rows, str(line_path))
 
     ui.log(f"✓ Ranges: {ranges_path}")

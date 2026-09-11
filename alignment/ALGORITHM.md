@@ -99,17 +99,17 @@ isn't a multiple of the block size. The whole paragraph's Norton text is
 then split into one fragment per group via `split_norton_span` (see below).
 
 A paragraph whose split never validates (`MAX_ATTEMPTS` retries exhausted)
-is kept as a single merged row spanning its whole line range, rather than
-dropping text.
+aborts the canto: the stage's output file is not written, so no merged
+(multi-group) row is ever produced and every output line corresponds to
+exactly one recomputable group.
 
 ## Stage 3: tercet -> per-line
 
 Takes stage 2's group rows and further splits any group spanning more than
 one Italian line into one fragment per line, via the *same*
 `split_norton_span` function - each Italian line is simply passed as its
-own one-line group. A group whose split never validates is kept merged
-(one output line spanning multiple Italian lines), same convention as
-stage 2.
+own one-line group. A group whose split never validates aborts the canto,
+same convention as stage 2.
 
 ## `split_norton_span`: the shared rearranging-split primitive
 
@@ -175,7 +175,8 @@ position rather than a repeating 1..3:
    dropped, or substituted; only reordered and re-split.
 
 Up to `MAX_ATTEMPTS` (3) retries on any failure; if none validates, the
-caller keeps the whole span as one merged row (never drops content).
+caller aborts the canto rather than write a merged row (content is never
+dropped - the split is simply retried from scratch on a rerun).
 
 ### No automatic punctuation restoration
 
@@ -203,11 +204,9 @@ Italian side is repeated in the tercet/line output files (see
 - **`<NN>-ranges.tsv`**: `paragraph<TAB>start_line<TAB>end_line`, one row
   per Norton paragraph (stage 1).
 - **`<NN>-3.txt`**: one line of English text per tercet-sized group (stage
-  2); a merge-fallback group still contributes exactly one line, so the
-  file may have fewer lines than the canto's tercet count when this
-  happens.
-- **`<NN>-1.txt`**: same shape, one line per Italian line in the normal
-  case (stage 3), likewise possibly fewer lines on a merge fallback.
+  2); the file may have fewer lines than the canto's tercet count when a
+  paragraph's line range is not a multiple of the block size.
+- **`<NN>-1.txt`**: same shape, one line per Italian line (stage 3).
 
 Each stage is skipped (no LLM calls) if its output file already exists, and
 loaded instead - see [README.md](README.md) "Resuming" for the mechanism
@@ -269,8 +268,8 @@ robustness at larger scale, remain open (see MEMO.md "Open questions").
 1. Depends on LLM quality and instruction-following for the rearranging
    split - a weaker local model (`qwen3.6`) struggles with larger group
    counts in a single call (numbering drifts, duplicates/gaps appear) and
-   falls back to merged rows more often; see stage 2/3's merge-fallback
-   coverage in a given run's log.
+   fails validation more often, aborting the canto; each split's retry
+   outcomes are visible in the run's log.
 2. Word-multiset validation cannot catch a split that is grammatically
    broken or attributes words to a plausible-but-wrong fragment while still
    using the same words in the same relative order - only content
