@@ -12,6 +12,29 @@ Italian terza rima poetry and English prose have different structures:
 
 The goal is to determine which Norton sentences correspond to which Italian lines, handling cases where word order differs or multiple Italian lines map to a single English sentence.
 
+### Design rationale: why extraction, not word reordering
+
+An earlier line of experiments (the `dante-la-el` project, see
+[PRIOR_WORK.md](../PRIOR_WORK.md)) took a different approach: split Norton's
+prose into fixed 3-line (tercet) chunks, then reorder that chunk's words
+(without rewriting any of them) to fill exactly 3 output lines matching the
+Italian tercet. That approach required heavy manual correction and differed
+per AI system used (PRIOR_WORK.md "Challenges"), and PLAN.md's early design
+notes record a concrete case (Canto 1 lines 41-43) where Norton's clause
+order is fully inverted relative to the Italian tercet (43→41→42), which a
+fixed 3-in/3-out reordering forces into an unnatural split.
+
+This project's algorithm instead keeps Norton's word order untouched and
+lets block length vary: some blocks are one Italian line, others span
+several, and line breaks are inserted only at block boundaries — never
+inside Norton's original word order. The payoff is that correctness becomes
+mechanically checkable (`norton_text.startswith(extracted)`) instead of
+depending on a subjective judgment of whether a reordering preserved
+meaning and vocabulary. The trade-off is Limitation 6 below: a block still
+maps N Italian lines to one contiguous span, so the exact line inside a
+multi-line block that "owns" a given phrase is underdetermined — see
+"Cross-model split comparison" under Success Metrics for a measured example.
+
 ## Two-Stage Extraction Algorithm
 
 The algorithm supports two modes:
@@ -242,16 +265,37 @@ Full-canto results across models and modes are tracked in
 
 - Direct comparison (default) outperforms `--translate` with every model
   tested.
-- Coverage ranges from 19% (local 14B model) to 100% (top-tier models).
+- Under `--strict-prefix` (the pre-fix baseline), coverage ranges from 19%
+  (local 14B model) to 100% (top-tier models).
+- Under the default search window (measured in MEMO.md "Results:
+  search-window mode"), `gemma-4-31b-it` reaches 100% coverage (up from
+  68%), `gpt-5.6-luna`/`gpt-5.6-terra` hold 100%, and `ministral-3:14b`
+  regresses (47% → 23%) due to hallucination-driven block growth under
+  islands — a capability limit, not a tunable window setting (see
+  [ISLAND_FIX.md](ISLAND_FIX.md) section 6 item 3). `ministral-3:14b` is
+  excluded from `run_models.sh`'s benchmark set as a result.
 
-**Note:** the MEMO.md numbers predate the search-window change and describe
-strict-prefix behavior; they are reproducible with `--strict-prefix` and serve
-as the A/B baseline. They have not yet been re-measured with the default
-window.
+### Cross-model split comparison
+
+Comparing the final block boundaries chosen by `gemma4`, `luna`, and `terra`
+on Canto 1 (window mode) shows the concatenated Norton text is essentially
+identical across all three (2 trailing-punctuation differences in 136
+lines), confirming there is one effectively unique underlying text
+alignment. But the exact line each model attributes a given phrase to
+differs at several points — e.g. for lines 42-44, `terra` attributes "He
+seemed to be coming against me, with head high..." to line 42 alone, while
+`gemma4`/`luna` attribute it jointly to lines 42-43. This is Limitation 6 /
+Finding 3 (MEMO.md) made concrete: block-level extraction fixes *what* text
+belongs to a block but leaves *which line inside it* underdetermined, so
+different models (and even different runs) can split the same block content
+at different points without either being "wrong."
 
 ## Configuration
 
-- **LLM Model:** Ollama (ministral-3:14b) by default
+- **LLM Model:** Ollama (ministral-3:14b) by default. Note: this model is
+  excluded from `run_models.sh`'s benchmark comparisons (see Success
+  Metrics above) since the search-window change regressed it; it remains
+  the tool's default only as a free local option, not as a recommendation.
 - **Temperature:** 1.0
 - **Max Retries:** 3 per extraction attempt
 - **Length Ratio Threshold:** 2.0
@@ -282,11 +326,17 @@ window.
 2. **Parallel Processing:** Process multiple paragraphs simultaneously
 3. **Human Review Interface:** Flag uncertain alignments for manual review
 4. **Alternative Models:** Test with larger models (70B+) for better accuracy
-5. **Re-measure the baseline:** Re-run MEMO.md's model comparison with the
-   search window enabled and compare against `--strict-prefix`
+5. ~~Re-measure the baseline~~ — done, see "Success Metrics" above and
+   MEMO.md "Results: search-window mode".
 6. **Line-level correspondence:** Resolve alignment inside multi-line blocks
    (embedding-based DP or paragraph-level correspondence extraction — see
-   MEMO.md "Redesign directions")
+   MEMO.md "Redesign directions"). One concrete candidate under discussion:
+   a two-stage approach mirroring the original `dante-la-el` method — first
+   fix coarse (tercet- or sentence-level) block boundaries, which appear to
+   be far less ambiguous than per-line boundaries, then reorder words
+   *within* that fixed span only, bounding the reordering-validation problem
+   that caused the original approach to be abandoned (see "Design
+   rationale" above).
 
 ## Files
 

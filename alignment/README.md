@@ -74,6 +74,18 @@ for `ministral-3:14b`) while giving the stronger models no benefit. Kept as
 an experiment switch; use the default direct comparison. See
 [MEMO.md](MEMO.md) for the measured numbers.
 
+## Reference Data
+
+`01-1.txt` is a fixed, manually-edited gold reference for Canto 1: Norton's
+prose rearranged to exactly 136 lines (one per Italian line), preserving
+Norton's wording while reordering words to match Dante's line structure.
+Carried over from the `dante-la-el` project's Bard experiments
+(https://github.com/7shi/dante-la-el/tree/main/Inferno/Bard/en-norton) — see
+[PRIOR_WORK.md](../PRIOR_WORK.md) for how it was produced (word/phrase
+alignment table, then per-line reordering with no word substitution) and
+[ALGORITHM.md](ALGORITHM.md) "Design rationale" for why this project's own
+algorithm does not attempt that reordering step itself.
+
 ## Output
 
 Results are written to `alignment/output/canto_XX.log`, containing:
