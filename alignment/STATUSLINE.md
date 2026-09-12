@@ -39,10 +39,10 @@ independent and both matter.
   constructing it is the session-boundary blank line; `ui.stream.end()`
   right after the call flushes the streamed reply's trailing partial line.
 - **One progress bar per canto**, opened with
-  `ui.progress(len(italian_lines), label=f"{cantica} {canto}/{n_cantos}")`
+  `ui.progress(len(italian_lines), label=f"{canticle} {canto}/{n_cantos}")`
   and closed automatically at the end of `align_canto`'s `with` block.
   `n_cantos` is the canticle's *total* canto count
-  (`len(dante_corpus.api.cantos(cantica))`), not the number of cantos
+  (`len(dante_corpus.api.cantos(canticle))`), not the number of cantos
   selected for this run - so the label reads e.g. `Inferno 5/34` even when
   invoked as `-c 5-10`. This folds the "which canto, out of how many" fact
   straight into the bar's label instead of a separate `[index/total]`

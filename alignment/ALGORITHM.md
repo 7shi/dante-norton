@@ -199,7 +199,7 @@ word-multiset check remains the only mechanical guarantee.
 
 ## Output Format
 
-`align.py` writes to `alignment/<cantica>/`, canto-number-prefixed, plus one
+`align.py` writes to `alignment/<canticle>/`, canto-number-prefixed, plus one
 combined log for all three stages (e.g. Inferno Canto 1 ->
 `alignment/inferno/01-*`, `alignment/inferno/01.log`). English only - no
 Italian side is repeated in the tercet/line output files (see

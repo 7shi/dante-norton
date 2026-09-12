@@ -15,7 +15,7 @@ Stages (run in sequence, in one process):
    Italian line.
 
 Output (English text only, no Italian side - one file per stage, written to
-alignment/<cantica>/, canto-number-prefixed):
+alignment/<canticle>/, canto-number-prefixed):
 - `<NN>-ranges.tsv`: paragraph<TAB>start_line<TAB>end_line, one row per
   processed Norton paragraph (stage 1). A paragraph may be left out (a
   non-translation one, e.g. a stray editorial note): it gets no rows and
@@ -59,7 +59,7 @@ whose range changed (a range edited outside `-p` cannot be detected).
 
 Progress display follows dante-corpus's ARCHITECTURE.md §4, mirroring
 skel/skel.py's driver_build.py: one `llm7shi.statusline.StatusLine` for the
-whole run, its bar labeled `{cantica} {canto}/{n_cantos}` and walking the
+whole run, its bar labeled `{canticle} {canto}/{n_cantos}` and walking the
 canto's Italian lines across stages 2-3, with every human-facing line
 sharing its console (`ui.log`/`ui.stream.error`) so streamed model output,
 the bar, and this script's own messages never clobber each other.
@@ -141,10 +141,10 @@ class ItalianLine:
         return f"ItalianLine({self.full_text!r}, line_num={self.line_num})"
 
 
-def load_italian_lines(cantica: str, canto: int) -> List[ItalianLine]:
+def load_italian_lines(canticle: str, canto: int) -> List[ItalianLine]:
     """Load a canto's Italian lines via the dante_corpus API."""
     return [ItalianLine(line.text, line.no)
-            for line in dante_corpus.canto(cantica, canto).lines()]
+            for line in dante_corpus.canto(canticle, canto).lines()]
 
 
 def load_norton_paragraphs(filepath: str) -> List[Tuple[int, str]]:
@@ -937,17 +937,17 @@ def patch_stages(args: argparse.Namespace, ui: StatusLine, italian_lines: List[I
     return True
 
 
-def align_canto(cantica: str, canto: int, args: argparse.Namespace, n_cantos: int,
+def align_canto(canticle: str, canto: int, args: argparse.Namespace, n_cantos: int,
                 ui: StatusLine) -> None:
     """
-    Run the full pipeline for one canto of one cantica. `n_cantos` is the
+    Run the full pipeline for one canto of one canticle. `n_cantos` is the
     canticle's total canto count, folded into the status bar's label
-    (`{cantica} {canto}/{n_cantos}`, mirroring skel/skel.py's
+    (`{canticle} {canto}/{n_cantos}`, mirroring skel/skel.py's
     driver_build.py) - the bar itself carries the run position, so there is
     no separate major-separator line.
     """
-    norton_file = REPO_ROOT / "en-norton" / cantica / f"{canto:02d}.txt"
-    out_dir = ALIGNMENT_DIR / cantica
+    norton_file = REPO_ROOT / "en-norton" / canticle / f"{canto:02d}.txt"
+    out_dir = ALIGNMENT_DIR / canticle
     out_dir.mkdir(parents=True, exist_ok=True)
     ranges_path = out_dir / f"{canto:02d}-ranges.tsv"
     tercet_path = out_dir / f"{canto:02d}-3.txt"
@@ -958,12 +958,12 @@ def align_canto(cantica: str, canto: int, args: argparse.Namespace, n_cantos: in
     with open(log_path, 'w', encoding='utf-8') as log_f:
         _log_file = log_f
 
-        log_print(f"=== {cantica.capitalize()} Canto {canto} Alignment (align.py) ===")
+        log_print(f"=== {canticle.capitalize()} Canto {canto} Alignment (align.py) ===")
         log_print(f"Model: {args.model}, Temperature: {args.temperature}, Think: {args.think}, "
                   f"Block size: {args.block_size}, Test: {args.test}")
         log_print()
 
-        italian_lines = load_italian_lines(cantica, canto)
+        italian_lines = load_italian_lines(canticle, canto)
 
         if args.paragraph is not None:
             if not patch_stages(args, ui, italian_lines, ranges_path, tercet_path,
@@ -981,14 +981,14 @@ def align_canto(cantica: str, canto: int, args: argparse.Namespace, n_cantos: in
                 return
             if (all(t.strip() for t in (row.text for row in tercet_rows))
                     and all(t.strip() for t in line_texts)):
-                notify(ui, f"✓ {cantica.capitalize()} {canto}/{n_cantos}: all stages skipped "
+                notify(ui, f"✓ {canticle.capitalize()} {canto}/{n_cantos}: all stages skipped "
                       f"(output files already exist, row counts verified)")
                 return
             notify(ui, f"Blank row(s) on disk - re-splitting only what they mark")
 
         paragraphs = load_norton_paragraphs(norton_file)
 
-        label = f"{cantica.capitalize()} {canto}/{n_cantos}"
+        label = f"{canticle.capitalize()} {canto}/{n_cantos}"
         with ui.progress(len(italian_lines), label=label, dual=True) as prog:
             if ranges_path.exists():
                 ranges = load_ranges_tsv(str(ranges_path))
@@ -1055,7 +1055,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Align Italian lines with Norton\"s English translation "
                     "(paragraph -> range -> tercet -> line, one LLM pipeline)")
-    parser.add_argument("cantica", choices=["inferno", "purgatorio", "paradiso"], help="Cantica name")
+    parser.add_argument("canticle", choices=["inferno", "purgatorio", "paradiso"], help="Canticle name")
     parser.add_argument("-c", "--canto", help=dante_corpus.api.CANTO_SPEC_HELP)
     parser.add_argument("-p", "--paragraph",
                         help="after hand-editing <NN>-ranges.tsv, re-split only these paragraphs "
@@ -1074,7 +1074,7 @@ def main():
 
     args = parser.parse_args()
 
-    if err := dante_corpus.api.check_canto_spec([args.cantica], args.canto):
+    if err := dante_corpus.api.check_canto_spec([args.canticle], args.canto):
         parser.error(err)
 
     if args.paragraph is not None:
@@ -1089,9 +1089,9 @@ def main():
             parser.error(str(exc).replace("canto", "paragraph"))
 
     ui = StatusLine()
-    n_cantos = len(dante_corpus.api.cantos(args.cantica))
-    for canto in dante_corpus.api.select_cantos(args.cantica, args.canto):
-        align_canto(args.cantica, canto, args, n_cantos, ui)
+    n_cantos = len(dante_corpus.api.cantos(args.canticle))
+    for canto in dante_corpus.api.select_cantos(args.canticle, args.canto):
+        align_canto(args.canticle, canto, args, n_cantos, ui)
 
 
 if __name__ == '__main__':

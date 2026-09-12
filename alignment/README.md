@@ -56,11 +56,11 @@ Two fixed gold references for Canto 1, `01-1.txt` (per-line) and `01-3.txt`
 uv run alignment/align.py inferno -c 1 --model openai:gpt-5.6-terra
 ```
 
-Positional argument: cantica name (`inferno`, `purgatorio`, or `paradiso`).
+Positional argument: canticle name (`inferno`, `purgatorio`, or `paradiso`).
 Options:
 
 - `-c`/`--canto`: canto number (e.g. `-c 1`). Omit to run every canto of the
-  cantica in turn (canto numbers taken from `dante-corpus`), in one process.
+  canticle in turn (canto numbers taken from `dante-corpus`), in one process.
 - `--model`: LLM model, passed through to `llm7shi`; use an `ollama:`,
   `google:`, or `openai:` prefix to select the backend. Cloud backends need
   the corresponding API key set in the environment.
@@ -118,7 +118,7 @@ per-tercet shape, as real pipeline output rather than hand-edited gold data.
 
 ## Output
 
-`align.py` writes to `alignment/<cantica>/`, canto-number-prefixed (e.g.
+`align.py` writes to `alignment/<canticle>/`, canto-number-prefixed (e.g.
 Inferno Canto 1 -> `alignment/inferno/01-*`):
 
 - **`<NN>-ranges.tsv`**: `paragraph<TAB>start_line<TAB>end_line`, one row

@@ -49,7 +49,7 @@ Read this when a canto fails. Symptom playbook:
 
 2. Inspect that paragraph against the originals:
 
-        uv run python alignment/debug.py show <cantica> <NN> -p PARAGRAPH
+        uv run python alignment/debug.py show <canticle> <NN> -p PARAGRAPH
 
    Prints the paragraph's range from <NN>-ranges.tsv, the Italian lines it
    covers (via dante-corpus) split into the same tercet groups with the
@@ -63,18 +63,18 @@ Read this when a canto fails. Symptom playbook:
    (paragraph<TAB>start<TAB>end; contiguous, no gaps/overlaps), then
    regenerating the stages downstream of it (they are skipped otherwise):
 
-        rm alignment/<cantica>/<NN>-3.txt alignment/<cantica>/<NN>-1.txt
-        uv run python alignment/align.py <cantica> -c <NN>
+        rm alignment/<canticle>/<NN>-3.txt alignment/<canticle>/<NN>-1.txt
+        uv run python alignment/align.py <canticle> -c <NN>
 
    Or re-split just the affected paragraphs, splicing the new rows into the
    existing files (one contiguous run covering every paragraph whose range
    changed - an edited boundary touches the two paragraphs sharing it):
 
-         uv run python alignment/align.py <cantica> -c <NN> -p A-B
+         uv run python alignment/align.py <canticle> -c <NN> -p A-B
 
 4. Mechanically cross-check whatever is already on disk (no LLM):
 
-        uv run python alignment/debug.py check <cantica> <NN>
+        uv run python alignment/debug.py check <canticle> <NN>
 
    Validates the ranges TSV (contiguity/coverage) and cross-checks the
    <NN>-3.txt / <NN>-1.txt row counts (blank rows are reported as pending
@@ -86,7 +86,7 @@ Read this when a canto fails. Symptom playbook:
 5. Eyeball the failing group - its Italian lines, the stage-2 row claiming
    to cover them (from <NN>-3.txt), and the stage-3 rows (from <NN>-1.txt):
 
-        uv run python alignment/debug.py rows <cantica> <NN> -g GROUP
+        uv run python alignment/debug.py rows <canticle> <NN> -g GROUP
 
    Filter with -p instead of -g to walk a whole paragraph - neighbouring
    groups included, since the misplaced English sits in one of their
@@ -108,7 +108,7 @@ Read this when a canto fails. Symptom playbook:
      and would double it in the per-paragraph word check - and rerun;
      stage 3 re-splits exactly the blank groups. Blanking by an
      explicit row range, e.g.
-     `sed -i 'A,Bs/.*/ /' alignment/<cantica>/<NN>-1.txt`, beats
+     `sed -i 'A,Bs/.*/ /' alignment/<canticle>/<NN>-1.txt`, beats
      hand-editing empty lines (a row silently added or dropped shifts
      every later line by one).
 
@@ -122,7 +122,7 @@ Read this when a canto fails. Symptom playbook:
 6. Word-diff one split response (per-group/line word counts plus
    missing/extra words):
 
-        uv run python alignment/debug.py words <cantica> <NN> -p PARAGRAPH \
+        uv run python alignment/debug.py words <canticle> <NN> -p PARAGRAPH \
             --response '<GROUP> ...fragment...
                         <GROUP> ...fragment...'
 
@@ -135,7 +135,7 @@ Read this when a canto fails. Symptom playbook:
    fragments reproduce the row but a line is still empty, the command says
    whether the range or the stage-2 split is at fault):
 
-        uv run python alignment/debug.py words <cantica> <NN> -g GROUP \
+        uv run python alignment/debug.py words <canticle> <NN> -g GROUP \
             --response '<LINE> ...
                         <LINE> ...
                         <LINE>'
@@ -154,7 +154,7 @@ from typing import Dict, List, Tuple
 
 import align
 
-CANTICAS = ["inferno", "purgatorio", "paradiso"]
+CANTICLES = ["inferno", "purgatorio", "paradiso"]
 WIDTH = 76
 
 
@@ -169,16 +169,16 @@ class CantoContext:
     number, and the stage-1 ranges (None when stage 1 has not run).
     """
 
-    def __init__(self, cantica: str, canto: int, block_size: int):
-        self.cantica = cantica
+    def __init__(self, canticle: str, canto: int, block_size: int):
+        self.canticle = canticle
         self.canto = canto
         self.block_size = block_size
-        self.out_dir = align.ALIGNMENT_DIR / cantica
+        self.out_dir = align.ALIGNMENT_DIR / canticle
         self.ranges_path = self.out_dir / f"{canto:02d}-ranges.tsv"
         self.tercet_path = self.out_dir / f"{canto:02d}-3.txt"
         self.line_path = self.out_dir / f"{canto:02d}-1.txt"
-        self.norton_file = align.REPO_ROOT / "en-norton" / cantica / f"{canto:02d}.txt"
-        self.italian_lines = align.load_italian_lines(cantica, canto)
+        self.norton_file = align.REPO_ROOT / "en-norton" / canticle / f"{canto:02d}.txt"
+        self.italian_lines = align.load_italian_lines(canticle, canto)
         self.paragraphs: Dict[int, str] = dict(
             align.load_norton_paragraphs(str(self.norton_file)))
         self.ranges = (align.load_ranges_tsv(str(self.ranges_path))
@@ -286,7 +286,7 @@ def load_response(args: argparse.Namespace) -> Dict[int, str]:
 # ============================================================================
 
 def cmd_show(args: argparse.Namespace) -> None:
-    ctx = CantoContext(args.cantica, args.canto, args.block_size)
+    ctx = CantoContext(args.canticle, args.canto, args.block_size)
     if ctx.ranges is None:
         sys.exit(f"✗ {ctx.ranges_path}: not found - stage 1 has not run; nothing to inspect yet")
     total = len(ctx.italian_lines)
@@ -326,7 +326,7 @@ def cmd_rows(args: argparse.Namespace) -> None:
     group's last (or first) Italian line(s) is a stage-2 boundary
     mistake.
     """
-    ctx = CantoContext(args.cantica, args.canto, args.block_size)
+    ctx = CantoContext(args.canticle, args.canto, args.block_size)
     if ctx.ranges is None:
         sys.exit(f"✗ {ctx.ranges_path}: not found - stage 1 has not run for this canto")
     entries = ctx.paragraph_groups()
@@ -434,7 +434,7 @@ def check_canto(ctx: CantoContext) -> Tuple[int, List[str]]:
 
 
 def cmd_check(args: argparse.Namespace) -> None:
-    ctx = CantoContext(args.cantica, args.canto, args.block_size)
+    ctx = CantoContext(args.canticle, args.canto, args.block_size)
     if ctx.ranges is None:
         sys.exit(f"✗ {ctx.ranges_path}: not found - stage 1 has not run for this canto")
     failures, lines = check_canto(ctx)
@@ -446,7 +446,7 @@ def cmd_check(args: argparse.Namespace) -> None:
 
 
 def cmd_words(args: argparse.Namespace) -> None:
-    ctx = CantoContext(args.cantica, args.canto, args.block_size)
+    ctx = CantoContext(args.canticle, args.canto, args.block_size)
     if ctx.ranges is None:
         sys.exit(f"✗ {ctx.ranges_path}: not found - stage 1 has not run for this canto")
     fragments = load_response(args)
@@ -724,7 +724,7 @@ def print_tips(stage: int) -> None:
             "total must stay equal to its Norton text; `check` after the "
             "edit confirms), blank the stage-3 rows of BOTH touched groups "
             "in <NN>-1.txt (e.g. sed -i 'A,Bs/.*/ /' "
-            "alignment/<cantica>/<NN>-1.txt), and rerun - stage 3 re-splits "
+            "alignment/<canticle>/<NN>-1.txt), and rerun - stage 3 re-splits "
             "exactly the blank groups.",
             "Boundary off: fix <NN>-ranges.tsv (step 3), then re-split the "
             "affected paragraphs with -p (one contiguous run covering "
@@ -791,13 +791,13 @@ def diagnose_group(ctx: CantoContext, entries, serial: int,
     for line in report:
         print(f"  {line}")
     print(f"\nDig deeper:")
-    print(f"  uv run python alignment/debug.py rows {ctx.cantica} {ctx.canto} -g {serial}")
-    print(f"  uv run python alignment/debug.py words {ctx.cantica} {ctx.canto} -g {serial} "
+    print(f"  uv run python alignment/debug.py rows {ctx.canticle} {ctx.canto} -g {serial}")
+    print(f"  uv run python alignment/debug.py words {ctx.canticle} {ctx.canto} -g {serial} "
           f"--response '...'")
     print(f"Fix (correct {ctx.ranges_path.name} first if the boundary check says so; "
           f"a plain rerun merely retries the blank rows - it cannot fix a range or a "
           f"row that has no valid split):")
-    print(f"  uv run python alignment/align.py {ctx.cantica} -c {ctx.canto} "
+    print(f"  uv run python alignment/align.py {ctx.canticle} -c {ctx.canto} "
           f"-p {paragraph_span(entries, serial)}")
 
 
@@ -847,8 +847,8 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     a ready-to-run `-p` fix command, and the stage's tips (print_tips -
     the docstring playbook, distilled).
     """
-    ctx = CantoContext(args.cantica, args.canto, args.block_size)
-    print(f"Diagnosing {args.cantica} {args.canto:02d} (block size {ctx.block_size})")
+    ctx = CantoContext(args.canticle, args.canto, args.block_size)
+    print(f"Diagnosing {args.canticle} {args.canto:02d} (block size {ctx.block_size})")
     if ctx.ranges is None:
         print(f"- {ctx.ranges_path.name}: not found - stage 1 has not run; run align.py first")
         return
@@ -908,7 +908,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_canto(p):
-        p.add_argument("cantica", choices=CANTICAS, help="Cantica name")
+        p.add_argument("canticle", choices=CANTICLES, help="Canticle name")
         p.add_argument("canto", type=int, help="Canto number")
 
     p_diag = sub.add_parser("diagnose", help="Name a canto: identify its last failure and "
@@ -948,9 +948,9 @@ def main():
     args = parser.parse_args()
     if args.command == "words" and args.paragraph is None and args.group is None:
         p_words.error("words needs -p PARAGRAPH or -g GROUP")
-    n_cantos = len(align.dante_corpus.api.cantos(args.cantica))
+    n_cantos = len(align.dante_corpus.api.cantos(args.canticle))
     if not 1 <= args.canto <= n_cantos:
-        parser.error(f"canto must be 1-{n_cantos} for {args.cantica}")
+        parser.error(f"canto must be 1-{n_cantos} for {args.canticle}")
 
     {"diagnose": cmd_diagnose, "show": cmd_show, "rows": cmd_rows,
      "check": cmd_check, "words": cmd_words}[args.command](args)
