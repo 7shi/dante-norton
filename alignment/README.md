@@ -149,8 +149,7 @@ that validated and leaves the rest blank; a rerun re-splits only the blank
 rows.
 
 Progress and errors are also printed to the console as the script runs, via
-a live `StatusLine` progress bar - see [STATUSLINE.md](STATUSLINE.md) for
-how that's wired.
+a live `StatusLine` progress bar.
 
 ### Resuming: each stage skips if its output file already exists
 
@@ -200,8 +199,7 @@ blank row.
 
 - Python 3.13+ (see `pyproject.toml`)
 - `dante_norton` library (parent directory)
-- `llm7shi` (model access and progress display - see
-  [STATUSLINE.md](STATUSLINE.md))
+- `llm7shi` (model access and progress display)
 - An LLM backend: local (Ollama) or cloud (Gemini, OpenAI-compatible) with
   the relevant API key set
 
