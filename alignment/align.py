@@ -989,7 +989,7 @@ def align_canto(cantica: str, canto: int, args: argparse.Namespace, n_cantos: in
         paragraphs = load_norton_paragraphs(norton_file)
 
         label = f"{cantica.capitalize()} {canto}/{n_cantos}"
-        with ui.progress(len(italian_lines), label=label) as prog:
+        with ui.progress(len(italian_lines), label=label, dual=True) as prog:
             if ranges_path.exists():
                 ranges = load_ranges_tsv(str(ranges_path))
                 notify(ui, f"✓ Stage 1 skipped: {ranges_path} already exists ({len(ranges)} ranges loaded)")
