@@ -17,7 +17,9 @@ Stages (run in sequence, in one process):
 Output (English text only, no Italian side - one file per stage, written to
 alignment/<cantica>/, canto-number-prefixed):
 - `<NN>-ranges.tsv`: paragraph<TAB>start_line<TAB>end_line, one row per
-  Norton paragraph (stage 1).
+  processed Norton paragraph (stage 1). A paragraph may be left out (a
+  non-translation one, e.g. a stray editorial note): it gets no rows and
+  its words are never used.
 - `<NN>-3.txt`: one Norton fragment per line, one line per tercet-sized
   group (stage 2).
 - `<NN>-1.txt`: same, one line per Italian line (stage 3).
@@ -190,13 +192,19 @@ def validate_ranges(ranges: List[ParagraphRange], paragraphs: List[Tuple[int, st
                     total_lines: int) -> str | None:
     """
     Mechanically check a candidate mapping. Returns None if valid, else a
-    description of the first problem found.
+    description of the first problem found. The ranges' paragraph numbers
+    must be an in-order subset of the Norton paragraphs: a paragraph left
+    out of the ranges (a non-translation one, e.g. a stray editorial note)
+    simply gets no rows and its words are never used.
     """
     expected_paragraph_nums = [p[0] for p in paragraphs]
     got_paragraph_nums = [r.paragraph for r in ranges]
-    if got_paragraph_nums != expected_paragraph_nums:
-        return (f"paragraph numbers {got_paragraph_nums} do not match "
-                f"expected {expected_paragraph_nums}")
+    remaining = iter(expected_paragraph_nums)
+    if not all(num in remaining for num in got_paragraph_nums):
+        return (f"paragraph numbers {got_paragraph_nums} are not an in-order subset "
+                f"of the Norton paragraphs {expected_paragraph_nums} - paragraphs "
+                f"left out of the ranges are not processed, but the listed ones "
+                f"must exist in the Norton text and keep their order")
 
     if ranges[0].start_line != 1:
         return f"first range starts at line {ranges[0].start_line}, expected 1"

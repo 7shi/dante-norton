@@ -122,7 +122,9 @@ per-tercet shape, as real pipeline output rather than hand-edited gold data.
 Inferno Canto 1 -> `alignment/inferno/01-*`):
 
 - **`<NN>-ranges.tsv`**: `paragraph<TAB>start_line<TAB>end_line`, one row
-  per Norton paragraph (stage 1).
+  per processed Norton paragraph (stage 1). A paragraph may be left out (a
+  non-translation one, e.g. a stray editorial note): it gets no rows and
+  its words are never used.
 - **`<NN>-3.txt`**: one line of English (Norton) text per tercet-sized
   group (stage 2), comparable 1:1 by position against the former
   `01-3.txt`. English only - the Italian side is not repeated in this file
