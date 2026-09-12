@@ -1056,8 +1056,8 @@ def main():
         description="Align Italian lines with Norton\"s English translation "
                     "(paragraph -> range -> tercet -> line, one LLM pipeline)")
     parser.add_argument("cantica", choices=["inferno", "purgatorio", "paradiso"], help="Cantica name")
-    parser.add_argument("-c", "--canto", metavar="SPEC", help=dante_corpus.api.CANTO_SPEC_HELP)
-    parser.add_argument("-p", "--paragraph", metavar="SPEC",
+    parser.add_argument("-c", "--canto", help=dante_corpus.api.CANTO_SPEC_HELP)
+    parser.add_argument("-p", "--paragraph",
                         help="after hand-editing <NN>-ranges.tsv, re-split only these paragraphs "
                              "through stages 2-3, splicing the new rows into the existing "
                              "<NN>-3.txt / <NN>-1.txt (needs -c; same spec grammar as -c; one "
