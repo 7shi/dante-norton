@@ -34,10 +34,15 @@ Read this when a canto fails. Symptom playbook:
   sentence mid-way (Norton repunctuates, e.g. ':' as '.'). The mistake
   goes either way - too late: the missing English opens the NEXT row
   and the group's last line(s) go empty; too early: it closes the
-  PREVIOUS row and the first line goes empty. The ranges are fine here
-  - the paragraph's words all match, so `check` stays green. When every
-  attempt returns the same words, no valid split of the row exists and
-  rerunning as-is cannot succeed - fix the rows themselves (step 5).
+  PREVIOUS row and the first line goes empty. When every attempt
+  returns the same words, no valid split of the row exists and
+  rerunning as-is cannot succeed. A green `check` does NOT prove the
+  ranges are fine here: a range a group off at a paragraph's edge also
+  yields a balanced paragraph, because the split steals words from
+  earlier rows to fill the group that has no real English - a
+  paragraph's first or last group failing this way is the tell. Run
+  step 2's boundary check first; a mismatch means fix the range
+  (step 3), not the rows.
 
 1. Find the failing paragraph in the console output or <NN>.log (e.g.
    "✗ Stage 2 failed: paragraph 10 could not be split after 3 attempts").
@@ -86,8 +91,11 @@ Read this when a canto fails. Symptom playbook:
    Filter with -p instead of -g to walk a whole paragraph - neighbouring
    groups included, since the misplaced English sits in one of their
    rows. A stage-2 row with no words for the group's last (or first)
-   Italian line(s) is a stage-2 boundary mistake. The range itself is
-   only wrong if `show` (step 2) shows a boundary mismatch.
+   Italian line(s) is usually a stage-2 boundary mistake - unless the
+   range is a group off at the paragraph's edge and the split stole the
+   words from earlier rows (the stage-3 playbook above tells the two
+   apart). The range itself is only wrong if `show` (step 2) shows a
+   boundary mismatch.
 
    Fixes, in increasing order of blast radius:
 
@@ -512,9 +520,12 @@ def assess_group_split(ctx: CantoContext, entries, fragments: Dict[int, str],
     the text split_norton_span was given. Returns (paired fragments,
     issues, report lines); paired fragments is None when the serial is not
     in the ranges. When the fragments reproduce the row exactly but some
-    line still got no words, the row itself has nothing for that line: a
-    stage-2 boundary mistake if every Norton word sits in some row of the
-    paragraph, a range problem if it does not.
+    line still got no words, the row itself has nothing for that line.
+    Norton words no row contains means the range likely runs past the
+    paragraph's content; a fully balanced paragraph means a stage-2
+    boundary mistake OR a range a group off at the paragraph's edge that
+    the split papered over by stealing words from earlier rows - the
+    verdict reports both readings and how to tell them apart.
     """
     entry = next(((r, s, gs) for r, s, gs in entries
                   if s <= serial < s + len(gs)), None)
@@ -574,11 +585,21 @@ def assess_group_split(ctx: CantoContext, entries, fragments: Dict[int, str],
                       f"({format_counts(unplaced)}) - the range likely runs past the paragraph's "
                       f"end; inspect with 'show -p {r.paragraph}' (step 3 in the docstring)")
     else:
-        report.append(f"    but every Norton word sits in some stage-2 row - the stage-2 split "
-                      f"drew this group's boundary wrong; re-split the affected paragraphs: "
-                      f"align.py {ctx.cantica} -c {ctx.canto} -p "
-                      f"{paragraph_span(entries, serial)} (or just rerun align.py - "
-                      f"blank rows are retried on their own)")
+        report.append(f"    but every Norton word sits in some stage-2 row - either:")
+        report.append(f"    a) a stage-2 boundary mistake: the misplaced English "
+                      f"opens/closes a neighbouring row - `rows -p {r.paragraph}` shows "
+                      f"it; fix the rows (step 5) or re-split with -p "
+                      f"{paragraph_span(entries, serial)}")
+        report.append(f"    b) a range a group off at the paragraph's edge, papered over "
+                      f"by the split stealing words from earlier rows - then the -p "
+                      f"re-split fails the same way; check the boundary first: "
+                      f"`show -p {r.paragraph}` (step 2) - the Norton text must start "
+                      f"at the range's first Italian line's content and end at its last")
+        if index == 0 or index == len(groups) - 1:
+            report.append(f"    this group is the paragraph's "
+                          f"{'first' if index == 0 else 'last'} one - an edge group "
+                          f"failing with a balanced paragraph makes (b) the leading "
+                          f"suspect")
     return fragments, issues, report
 
 
@@ -677,26 +698,42 @@ def print_tips(stage: int) -> None:
         ],
         3: [
             "An empty fragment means the group's stage-2 row has no words "
-            "for that Italian line: one Norton sentence straddles the two "
-            "rows - a stage-2 boundary mistake. While `check` stays green "
-            "(every Norton word sits in some row), the ranges are fine.",
-            "The misplaced English sits in a neighbouring row: a boundary "
-            "drawn too late opens the NEXT row with it (the group's last "
-            "line(s) go empty); drawn too early it closes the PREVIOUS row "
-            "(the first line goes empty). `rows -p PARAGRAPH` shows both.",
+            "for that Italian line. Usually one Norton sentence straddles "
+            "the two rows - a stage-2 boundary mistake. But a green "
+            "`check` does not prove the range: a range a group off at a "
+            "paragraph's edge balances too, because the split steals words "
+            "from earlier rows to fill the group that has no real English "
+            "- the picture looks identical.",
+            "Read the neighbouring rows first (`rows -p PARAGRAPH`): a "
+            "boundary drawn too late opens the NEXT row with the missing "
+            "English (the group's last line(s) go empty); drawn too early "
+            "it closes the PREVIOUS row (the first line goes empty). If "
+            "instead the failing row is a small fragment lifted from a "
+            "far-earlier row, or the real English is nowhere in the "
+            "paragraph, suspect the range.",
+            "The boundary check settles it (step 2, no LLM): `show -p "
+            "PARAGRAPH` - the Norton text must start at the range's first "
+            "Italian line's content and end at its last, and the next "
+            "paragraph must pick up right there. Check this FIRST when the "
+            "failing group is the paragraph's first or last one.",
             "Attempts that return the same words every time mean no valid "
             "split of the row exists - rerunning as-is cannot succeed.",
-            "Deterministic fix: move the misplaced fragment across the two "
-            "rows in <NN>-3.txt (a move, never a rewrite: each paragraph's "
-            "word total must stay equal to its Norton text; `check` after "
-            "the edit confirms), blank the stage-3 rows of BOTH touched "
-            "groups in <NN>-1.txt (e.g. sed -i 'A,Bs/.*/ /' "
+            "Boundary fine (a straddling sentence): deterministic fix - "
+            "move the misplaced fragment across the two rows in "
+            "<NN>-3.txt (a move, never a rewrite: each paragraph's word "
+            "total must stay equal to its Norton text; `check` after the "
+            "edit confirms), blank the stage-3 rows of BOTH touched groups "
+            "in <NN>-1.txt (e.g. sed -i 'A,Bs/.*/ /' "
             "alignment/<cantica>/<NN>-1.txt), and rerun - stage 3 re-splits "
             "exactly the blank groups.",
-            "Or re-split the paragraph with -p: simpler, but the LLM redraws "
-            "every boundary in it at temperature 1.0, so currently-good rows "
-            "can change too - prefer it when several groups in one paragraph "
-            "are tangled, not for a single straddling sentence.",
+            "Boundary off: fix <NN>-ranges.tsv (step 3), then re-split the "
+            "affected paragraphs with -p (one contiguous run covering "
+            "every paragraph whose range changed).",
+            "Re-splitting with -p redraws every boundary in the run's "
+            "paragraphs at temperature 1.0, so currently-good rows can "
+            "change too - prefer the row move for a single straddling "
+            "sentence, -p when several groups are tangled or the range "
+            "changed.",
         ],
     }.get(stage, [])
     if not tips:
@@ -757,8 +794,9 @@ def diagnose_group(ctx: CantoContext, entries, serial: int,
     print(f"  uv run python alignment/debug.py rows {ctx.cantica} {ctx.canto} -g {serial}")
     print(f"  uv run python alignment/debug.py words {ctx.cantica} {ctx.canto} -g {serial} "
           f"--response '...'")
-    print(f"Fix (after correcting {ctx.ranges_path.name} if the range is at fault; "
-          f"a plain rerun also works - it retries only the blank rows):")
+    print(f"Fix (correct {ctx.ranges_path.name} first if the boundary check says so; "
+          f"a plain rerun merely retries the blank rows - it cannot fix a range or a "
+          f"row that has no valid split):")
     print(f"  uv run python alignment/align.py {ctx.cantica} -c {ctx.canto} "
           f"-p {paragraph_span(entries, serial)}")
 
