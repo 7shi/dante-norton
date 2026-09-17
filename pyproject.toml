@@ -25,3 +25,6 @@ packages = ["dante_norton"]
 include = [
     "dante_norton",
 ]
+
+[project.scripts]
+usage = "dante_norton.usage:main"
