@@ -38,9 +38,11 @@ sys.path.insert(0, str(REPO_ROOT))
 import align
 import dante_corpus
 from dante_corpus import tokenize, has_alpha
-from dante_norton.usage import USAGE_PATH, append_usage
+from dante_norton.usage import append_usage
 from llm7shi import Client
 from llm7shi.statusline import StatusLine
+
+USAGE_PATH = REPO_ROOT / "usage.jsonl"
 
 CANTICLES = ["inferno", "purgatorio", "paradiso"]
 
@@ -298,7 +300,7 @@ def check_canto(canticle: str, canto: int, args: argparse.Namespace, n_cantos: i
     if not usages:
         return None
     canto_usage = sum(usages)
-    append_usage(canto_usage, args.model)
+    append_usage(canto_usage, args.model, USAGE_PATH)
     ui.log(f"✓ Usage: {canto_usage} -> {USAGE_PATH}")
     return canto_usage
 

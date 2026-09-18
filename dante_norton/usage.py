@@ -1,4 +1,4 @@
-"""LLM呼び出しのトークン使用量（llm7shiの`Usage`）をリポジトリ直下のusage.jsonlに記録・集計するモジュール。
+"""LLM呼び出しのトークン使用量（llm7shiの`Usage`）をusage.jsonlに記録・集計するモジュール。
 
 hypercomplexのsrc/usage（https://github.com/7shi/hypercomplex）と同じAPIをdante_norton内に移植したもの。
 """
@@ -15,8 +15,6 @@ from pathlib import Path
 from typing import IO, Iterator
 
 from llm7shi.usage import Usage
-
-USAGE_PATH = Path(__file__).resolve().parents[1] / "usage.jsonl"
 
 # usage.jsonlの排他制御: LOCK_RETRY_INTERVAL秒おきに、最大LOCK_TIMEOUT秒まで再試行する
 LOCK_RETRY_INTERVAL = 0.5
@@ -59,7 +57,20 @@ def today() -> str:
     return datetime.now(timezone.utc).strftime("%Y/%m/%d")
 
 
-def parse_usage_file(path: Path = USAGE_PATH) -> dict[str, dict[str, Usage]]:
+def find_usage_file() -> Path:
+    """カレントディレクトリの絶対パスから1つずつ上に向かってusage.jsonlを探し、見つかったパスを返す。
+
+    見つからなかった場合はFileNotFoundErrorを送出する。
+    """
+    start = Path.cwd().resolve()
+    for d in (start, *start.parents):
+        candidate = d / "usage.jsonl"
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"{start}から上に向かって探しましたが、usage.jsonlが見つかりませんでした")
+
+
+def parse_usage_file(path: Path) -> dict[str, dict[str, Usage]]:
     """usage.jsonlをパースし、日付をkey、モデル名をkeyとする合計Usageのdictをvalueとするdictを返す。
 
     日付は各レコードの`timestamp`をUTCに変換して求める。日付・モデル名はファイル内での出現順を保つ。
@@ -85,7 +96,7 @@ def parse_usage_file(path: Path = USAGE_PATH) -> dict[str, dict[str, Usage]]:
     return totals
 
 
-def append_usage(usage: Usage, model: str, path: Path = USAGE_PATH, timestamp: datetime | None = None) -> None:
+def append_usage(usage: Usage, model: str, path: Path, timestamp: datetime | None = None) -> None:
     """Usageをモデル名・タイムゾーン付きの生成日時とともにusage.jsonlに1行追記する。
 
     timestampを省略した場合は現在時刻（ローカルのタイムゾーン付き）を使う。追記はロックで排他制御される。
@@ -96,7 +107,7 @@ def append_usage(usage: Usage, model: str, path: Path = USAGE_PATH, timestamp: d
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def merge_usage(path: Path = USAGE_PATH) -> tuple[int, int]:
+def merge_usage(path: Path) -> tuple[int, int]:
     """usage.jsonlのレコードをUTC日付・モデル単位で1行に統合し、ファイルを書き換える。
 
     各レコードの`timestamp`をUTCに変換した日付とモデル名が同じもの同士を合算する。
@@ -134,25 +145,7 @@ def merge_usage(path: Path = USAGE_PATH) -> tuple[int, int]:
     return len(lines), len(new_lines)
 
 
-def main(argv: list[str] | None = None) -> int:
-    """usage.jsonlに記録されたトークン使用量を集計して表示するCLI（`uv run python -m dante_norton.usage`）。"""
-    parser = argparse.ArgumentParser(description="usage.jsonlに記録されたトークン使用量を集計して表示する")
-    parser.add_argument("-a", "--all", action="store_true",
-                        help="日付ごとの合計をすべて表示する（デフォルト: 今日の分のみ）")
-    parser.add_argument("-f", "--file", type=Path, default=USAGE_PATH,
-                        help="対象のusage.jsonlのパス（デフォルト: リポジトリ直下のusage.jsonl）")
-    parser.add_argument("-m", "--merge", action="store_true",
-                        help="UTC基準で日ごと・モデルごとにレコードを統合してファイルを書き換える")
-    args = parser.parse_args(argv)
-
-    if args.merge:
-        if not args.file.exists():
-            print(f"{args.file}: 記録がありません")
-            return 1
-        before, after = merge_usage(args.file)
-        print(f"{args.file}: {before}行 → {after}行に統合しました")
-        return 0
-
+def _cmd_show(args: argparse.Namespace) -> int:
     totals = parse_usage_file(args.file)
     if not totals:
         print(f"{args.file}: 記録がありません")
@@ -184,6 +177,41 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\n\n".join(sections))
     return 0
+
+
+def _cmd_merge(args: argparse.Namespace) -> int:
+    if not args.file.exists():
+        print(f"{args.file}: 記録がありません")
+        return 1
+    before, after = merge_usage(args.file)
+    print(f"{args.file}: {before}行 → {after}行に統合しました")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """usage.jsonlに記録されたトークン使用量を集計・整形するCLI（`uv run usage`）。"""
+    parser = argparse.ArgumentParser(description="usage.jsonlに記録されたトークン使用量を集計・整形する")
+    parser.add_argument("-f", "--file", type=Path, default=None,
+                        help="対象のusage.jsonlのパス（デフォルト: カレントディレクトリから上に向かって探索）")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    show_parser = subparsers.add_parser("show", help="トークン使用量を集計して表示する")
+    show_parser.add_argument("-a", "--all", action="store_true",
+                             help="日付ごとの合計をすべて表示する（デフォルト: 今日の分のみ）")
+    show_parser.set_defaults(func=_cmd_show)
+
+    merge_parser = subparsers.add_parser("merge",
+                                         help="UTC基準で日ごと・モデルごとにレコードを統合してファイルを書き換える")
+    merge_parser.set_defaults(func=_cmd_merge)
+
+    args = parser.parse_args(argv)
+    if args.file is None:
+        try:
+            args.file = find_usage_file()
+        except FileNotFoundError as e:
+            print(e)
+            return 1
+    return args.func(args)
 
 
 if __name__ == "__main__":
