@@ -17,7 +17,7 @@ after an interrupted or partial run only fills in what's missing; delete the
 file (or edit out a group's rows) to force it to be rechecked.
 
 Token usage is appended to the repo root's `usage.jsonl` once per canto right
-after that canto finishes (see dante_norton.usage), not accumulated across
+after that canto finishes (see llm7shi.usage), not accumulated across
 cantos - the run's final on-screen total is a display-only sum of those
 already-recorded per-canto entries, so it is never written again itself.
 
@@ -38,9 +38,9 @@ sys.path.insert(0, str(REPO_ROOT))
 import align
 import dante_corpus
 from dante_corpus import tokenize, has_alpha
-from dante_norton.usage import append_usage
 from llm7shi import Client
 from llm7shi.statusline import StatusLine
+from llm7shi.usage import append_usage
 
 USAGE_PATH = REPO_ROOT / "usage.jsonl"
 
