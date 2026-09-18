@@ -88,16 +88,66 @@ def append_usage(usage: Usage, model: str, path: Path = USAGE_PATH, timestamp: d
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def merge_usage(path: Path = USAGE_PATH) -> tuple[int, int]:
+    """usage.jsonlのレコードをUTC日付・モデル単位で1行に統合し、ファイルを書き換える。
+
+    各レコードの`timestamp`をUTCに変換した日付とモデル名が同じもの同士を合算する。
+    統合後のtimestampはその日のUTC 00:00とする。日付・モデルはファイル内での出現順を保つ。
+    読み込みと書き込みを同一ロックのもとで行う。統合前後のレコード数を返す。
+    """
+    with _locked(path, "r+") as f:
+        lines = [line for line in f.read().splitlines() if line.strip()]
+
+        merged: dict[tuple, Usage] = {}
+        order: list[tuple] = []
+        for line in lines:
+            record = json.loads(line)
+            timestamp = datetime.fromisoformat(record["timestamp"]).astimezone(timezone.utc)
+            date = timestamp.date()
+            model = record["model"]
+            usage = Usage(raw={k: v for k, v in record.items() if k not in ("timestamp", "model")})
+            key = (date, model)
+            if key not in merged:
+                merged[key] = usage
+                order.append(key)
+            else:
+                merged[key] = merged[key] + usage
+
+        new_lines = []
+        for date, model in order:
+            timestamp = datetime(date.year, date.month, date.day, tzinfo=timezone.utc)
+            record = {"timestamp": timestamp.isoformat(), "model": model, **merged[(date, model)].to_dict()}
+            new_lines.append(json.dumps(record, ensure_ascii=False))
+
+        f.seek(0)
+        f.write("".join(line + "\n" for line in new_lines))
+        f.truncate()
+
+    return len(lines), len(new_lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     """usage.jsonlに記録されたトークン使用量を集計して表示するCLI（`uv run python -m dante_norton.usage`）。"""
     parser = argparse.ArgumentParser(description="usage.jsonlに記録されたトークン使用量を集計して表示する")
     parser.add_argument("-a", "--all", action="store_true",
                         help="日付ごとの合計をすべて表示する（デフォルト: 今日の分のみ）")
+    parser.add_argument("-f", "--file", type=Path, default=USAGE_PATH,
+                        help="対象のusage.jsonlのパス（デフォルト: リポジトリ直下のusage.jsonl）")
+    parser.add_argument("-m", "--merge", action="store_true",
+                        help="UTC基準で日ごと・モデルごとにレコードを統合してファイルを書き換える")
     args = parser.parse_args(argv)
 
-    totals = parse_usage_file()
+    if args.merge:
+        if not args.file.exists():
+            print(f"{args.file}: 記録がありません")
+            return 1
+        before, after = merge_usage(args.file)
+        print(f"{args.file}: {before}行 → {after}行に統合しました")
+        return 0
+
+    totals = parse_usage_file(args.file)
     if not totals:
-        print(f"{USAGE_PATH}: 記録がありません")
+        print(f"{args.file}: 記録がありません")
         return 1
 
     if not args.all:
