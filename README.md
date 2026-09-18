@@ -56,7 +56,7 @@ This project is licensed under [CC0 1.0 Universal](LICENSE) (Public Domain).
 
 - en-norton/: English (Norton translation). See [en-norton/README.md](en-norton/README.md)
 - dante_norton/: Python package for parsing Dante's Divine Comedy cantos. See [dante_norton/README.md](dante_norton/README.md) for API reference.
-- alignment/: Italian-Norton line alignment scripts. See [alignment/README.md](alignment/README.md) for usage, [alignment/ALGORITHM.md](alignment/ALGORITHM.md) for algorithm details, and [alignment/MEMO.md](alignment/MEMO.md) for LLM backend comparison notes.
+- alignment/: Italian-Norton line alignment scripts. See [alignment/README.md](alignment/README.md) for usage and for the algorithm, checking and backend-comparison documents it indexes.
 
 ## Future Work
 

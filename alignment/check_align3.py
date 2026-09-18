@@ -22,12 +22,43 @@ cantos - the run's final on-screen total is a display-only sum of those
 already-recorded per-canto entries, so it is never written again itself.
 
     uv run python alignment/check_align3.py inferno -c 1 -m openai:gpt-5.6-terra
+
+`--scores` scores an already-written `<NN>-3.tsv` instead of calling the LLM:
+it reads the table back and reports, per group, the deficit and surplus rates
+described under "Two rates" below. It makes no LLM call and writes no file at
+all - the scores go to stdout as one TSV, the closing summary to stderr - so it
+is safe to run over the whole poem and can be redirected or piped.
+
+    uv run python alignment/check_align3.py inferno --scores
+    uv run python alignment/check_align3.py inferno --scores > scores.tsv
+
+Both rates are computed from the table plus the group's English fragment, so any
+table in the same three columns scores the same way. `score_canto()` and
+`run_scores()` therefore take a filename `tag`, and check_align3_jev.py's own
+`--scores` calls them to score its `<NN>-3-jev.tsv` with this same code.
+
+Two rates
+---------
+
+The filled-in table is an assignment between the group's Italian and English
+words, and reading it from either end answers a different question:
+
+- **deficit** - the fraction of Italian words marked `-`. High when the group's
+  English fragment is missing text those Italian lines need.
+- **surplus** - the fraction of the group's English words that no Italian word
+  claimed. High when the fragment carries text belonging to another group.
+
+A group whose English fragment was displaced raises exactly one of the two, so
+neither rate alone finds both failures, and a group scoring high on surplus is
+usually adjacent to the group that scores high on deficit - the same displaced
+text seen from its two ends.
 """
 
 import argparse
 import re
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Tuple
 
@@ -48,6 +79,12 @@ CANTICLES = ["inferno", "purgatorio", "paradiso"]
 
 # Retries per group's correspondence-table call before giving up
 MAX_ATTEMPTS = 3
+
+# Rates at or above which --scores flags a group. Both are the 99th percentile
+# of their own rate over the 4,841 groups of the full 100-canto run, so roughly
+# 1% of groups clear each on a canto whose split is sound.
+DEFICIT_FLAG = 0.271
+SURPLUS_FLAG = 0.312
 
 
 # ============================================================================
@@ -79,6 +116,20 @@ def italian_words(text: str) -> List[str]:
     """Italian word tokens via dante_corpus.tokenize, in original order, with
     punctuation/symbol tokens (has_alpha False) excluded."""
     return [t for t in tokenize(text) if has_alpha(t)]
+
+
+# The English side cannot reuse dante_corpus.tokenize: that splits at an
+# apostrophe because Italian elides before one ("l'ora" is two words), where
+# English keeps it inside the word ("God's", "glow'd"). Hyphenated compounds
+# stay whole too - Norton renders "lonza" as "she-leopard". A leading or
+# trailing apostrophe is a quote mark and stays out.
+ENGLISH_WORD_RE = re.compile(r"[^\W\d_]+(?:[-'’][^\W\d_]+)*")
+
+
+def english_words(text: str) -> List[str]:
+    """English word tokens, in original order, with punctuation and digits
+    excluded and intra-word apostrophes and hyphens kept."""
+    return ENGLISH_WORD_RE.findall(text)
 
 
 class WordRow(NamedTuple):
@@ -173,6 +224,169 @@ def check_group(args: argparse.Namespace, ui: StatusLine, italian_text: str,
 
     notify(ui, f"    ✗ failed after {MAX_ATTEMPTS} attempts", error=True)
     return None, None
+
+
+# ============================================================================
+# Scoring a filled-in table: the deficit and surplus rates (--scores)
+# ============================================================================
+
+class GroupScore(NamedTuple):
+    deficit: float          # Italian words marked `-`, as a fraction
+    surplus: float          # English words no Italian word claimed, as a fraction
+    n_italian: int
+    n_english: int
+    unclaimed: List[str]    # the surplus English words, in the fragment's order
+
+
+def surplus_words(english_text: str, rows: List[WordRow]) -> List[str]:
+    """
+    The group's English words that no row of the table claimed, in the order
+    they appear in the fragment.
+
+    Matching is by lowercased token and consumes one claim per occurrence, so a
+    fragment's second "the" counts as surplus unless a second row claimed it. A
+    row may name a word the fragment does not contain (the model occasionally
+    writes an inflected form); such a claim matches nothing and is ignored
+    rather than cancelling an unrelated word.
+    """
+    claimed = Counter()
+    for row in rows:
+        if row.english != '-':
+            claimed.update(word.lower() for word in english_words(row.english))
+
+    unclaimed = []
+    for word in english_words(english_text):
+        key = word.lower()
+        if claimed[key]:
+            claimed[key] -= 1
+        else:
+            unclaimed.append(word)
+    return unclaimed
+
+
+def score_group(english_text: str, rows: List[WordRow]) -> GroupScore | None:
+    """Both rates for one group's filled-in table, or None if it has no words
+    to divide by."""
+    n_italian = len(rows)
+    n_english = len(english_words(english_text))
+    if not n_italian or not n_english:
+        return None
+    unclaimed = surplus_words(english_text, rows)
+    return GroupScore(
+        deficit=sum(1 for row in rows if row.english == '-') / n_italian,
+        surplus=len(unclaimed) / n_english,
+        n_italian=n_italian,
+        n_english=n_english,
+        unclaimed=unclaimed,
+    )
+
+
+SCORES_HEADER = ("Canticle\tCanto\tGroup\tStart\tEnd\tItalianWords\tEnglishWords\t"
+                 "Deficit\tSurplus\tSurplusWords")
+
+
+def err(text: str) -> None:
+    """Print to stderr, keeping stdout for the scores alone."""
+    print(text, file=sys.stderr)
+
+
+def score_canto(canticle: str, canto: int, args: argparse.Namespace,
+                tag: str = "") -> List[Tuple[int, int, int, GroupScore]] | None:
+    """
+    Score one canto's already-written `<NN>-3{tag}.tsv`, writing its rows to
+    stdout. Writes no file, and the table it reads is left untouched. Returns
+    the scored rows, or None after reporting on stderr why the canto's inputs
+    are missing or stale.
+
+    `tag` selects which checker's table to score: "" for this script's own,
+    "-jev" for check_align3_jev.py's. The scoring is identical either way - the
+    surplus rate comes from the group's English fragment in `<NN>-3.txt` minus
+    what the table claimed, so it needs nothing of the table but the three
+    columns both checkers write. Only `args.block_size` is read from `args`.
+
+    There is no status line: scoring a canto is pure computation over two files
+    already on disk, and finishes before a progress display would mean anything.
+    """
+    stem = f"{canto:02d}-3{tag}"
+    out_dir = ALIGNMENT_DIR / canticle
+    ranges_path = out_dir / f"{canto:02d}-ranges.tsv"
+    tercet_path = out_dir / f"{canto:02d}-3.txt"
+    words_path = out_dir / f"{stem}.tsv"
+    label = f"{canticle.capitalize()} {canto}"
+
+    for path in (ranges_path, tercet_path, words_path):
+        if not path.exists():
+            err(f"✗ {label}: {path} not found - run the check first")
+            return None
+
+    italian_lines = align.load_italian_lines(canticle, canto)
+    ranges = align.load_ranges_tsv(str(ranges_path))
+    groups = align.expected_tercet_groups(italian_lines, ranges, args.block_size)
+    tercets = tercet_path.read_text(encoding='utf-8').splitlines()
+    if len(tercets) != len(groups):
+        err(f"✗ {label}: {tercet_path} has {len(tercets)} row(s) but "
+            f"{len(groups)} expected for block-size {args.block_size} - stale file?")
+        return None
+
+    existing = load_existing_tsv(words_path)
+    scores = []
+    for index, (group, english_text) in enumerate(zip(groups, tercets), 1):
+        rows = existing.get(index)
+        if rows is None or not english_text.strip():
+            continue
+        # Same staleness guard as the check itself: only score a table whose
+        # Italian column still matches the freshly recomputed words.
+        italian_text = ' '.join(line.full_text for line in group)
+        if [row.italian for row in rows] != italian_words(italian_text):
+            err(f"✗ {label}: group {index} in {words_path.name} does not "
+                f"match its Italian words - stale file?")
+            return None
+        score = score_group(english_text, rows)
+        if score is not None:
+            scores.append((index, group[0].line_num, group[-1].line_num, score))
+
+    if not scores:
+        err(f"✗ {label}: {words_path} has no scorable group")
+        return None
+
+    # The scores themselves go to stdout, one row per group, so a run can be
+    # redirected or piped; everything else this path prints goes to stderr.
+    for group, lo, hi, s in scores:
+        print(f"{canticle}\t{canto}\t{group}\t{lo}\t{hi}\t{s.n_italian}\t{s.n_english}\t"
+              f"{s.deficit:.3f}\t{s.surplus:.3f}\t{' '.join(s.unclaimed)}")
+    return scores
+
+
+def run_scores(args: argparse.Namespace, tag: str = "") -> None:
+    """
+    Score every canto named by `args.canticle`/`args.canto`, writing the scores
+    to stdout as a single TSV (one row per group, `SCORES_HEADER` first) and the
+    closing summary and any errors to stderr. The whole `--scores` driver, shared
+    with check_align3_jev.py so that both checkers' tables are scored by exactly
+    the same code.
+
+    No file is written: a scored table is cheap enough to recompute that keeping
+    one on disk only invites it to go stale against the table it came from.
+    Redirect stdout to keep a copy.
+
+    `tag` is `score_canto`'s: "" for `<NN>-3.tsv`, "-jev" for `<NN>-3-jev.tsv`.
+    """
+    print(SCORES_HEADER)
+    scored = flagged = cantos = 0
+    for canto in dante_corpus.api.select_cantos(args.canticle, args.canto):
+        scores = score_canto(args.canticle, canto, args, tag)
+        if scores is None:
+            continue
+        cantos += 1
+        scored += len(scores)
+        flagged += sum(1 for s in scores
+                       if s[3].deficit >= DEFICIT_FLAG or s[3].surplus >= SURPLUS_FLAG)
+    err(f"--- {scored} group(s) scored over {cantos} canto(s), {flagged} flagged "
+        f"(deficit >= {DEFICIT_FLAG}, surplus >= {SURPLUS_FLAG}) ---")
+    if tag:
+        # Both thresholds are percentiles of Terra's distribution, not this
+        # table's; see ALIGN3.md.
+        err("    thresholds are Terra percentiles - flags on this table are provisional")
 
 
 # ============================================================================
@@ -319,13 +533,22 @@ def main():
                              f"(default: {align.DEFAULT_BLOCK_SIZE})")
     parser.add_argument("--test", action="store_true",
                         help="Process only the first group of each canto, for a quick smoke test")
+    parser.add_argument("--scores", action="store_true",
+                        help="Score an already-written <NN>-3.tsv instead of calling the LLM: "
+                             "report each group's deficit and surplus rate to "
+                             "stdout and flag the outliers")
     args = parser.parse_args()
 
     if err := dante_corpus.api.check_canto_spec([args.canticle], args.canto):
         parser.error(err)
 
+    if args.scores:
+        run_scores(args)
+        return
+
     ui = StatusLine()
     n_cantos = len(dante_corpus.api.cantos(args.canticle))
+
     usages = []
     for canto in dante_corpus.api.select_cantos(args.canticle, args.canto):
         usage = check_canto(args.canticle, canto, args, n_cantos, ui)

@@ -8,6 +8,7 @@ requires-python = ">=3.13"
 dependencies = [
     "dante-corpus",
     "llm7shi>=0.19.1",
+    "typesafe-sdk>=0.6.0",
 ]
 
 [tool.uv.sources]

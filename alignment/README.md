@@ -2,6 +2,19 @@
 
 Alignment scripts for the Italian original text and Norton's English translation.
 
+## Documents
+
+| | |
+|---|---|
+| [ALGORITHM.md](ALGORITHM.md) | The three-stage pipeline in full, and its Canto 1 results |
+| [ALIGN3.md](ALIGN3.md) | Checking the stage-2 split: word correspondence, the deficit and surplus rates, the whole-poem measurements, and the Terra/Jev comparison (closed) |
+| [MEMO.md](MEMO.md) | Experimental history across LLM backends, and the model-selection decision |
+| [PRIOR_WORK.md](../PRIOR_WORK.md) | The earlier hand- and AI-assisted line splits this work builds on |
+
+This table is what the repo root's README points at instead of listing these
+documents itself, so a new document under `alignment/` is added here and the
+root README is left alone.
+
 ## Overview
 
 The current, recommended approach is `align.py`, a single script that runs a
@@ -195,6 +208,86 @@ it its trailing rows). When `<NN>-1.txt` is absent, stage 3 runs fresh -
 and keeps its progress as it goes, so a later failure resumes at the first
 blank row.
 
+## Checking the stage-2 split
+
+A stage-3 result that looks wrong is often a stage-2 problem: the group it was
+handed was already the wrong English text. Two scripts check stage 2 on its own
+by asking, for each Italian word of a `<NN>-3.txt` group, which word of that
+group's English fragment renders it. A correctly split group yields a
+correspondence for nearly every content word; a mismatched one does not.
+
+Neither script is part of the pipeline - both only read `<NN>-ranges.tsv` and
+`<NN>-3.txt`, and never write to them. `--scores` on either then turns a
+finished table into two per-group rates, without calling an LLM at all (see
+"Scoring a checked canto" below).
+
+    uv run python alignment/check_align3.py inferno -c 1 -m openai:gpt-5.6-terra
+    uv run python alignment/check_align3_jev.py inferno -c 1
+
+[check_align3.py](check_align3.py) has a generative LLM fill in a markdown
+correspondence table; [check_align3_jev.py](check_align3_jev.py) asks TypeSafe
+System One (Jev) typed Choice questions instead, and needs `TYPESAFE_API_KEY`.
+Both take the same `-c` / `--block-size` / `--test` options as `align.py`, and
+both append per-canto token usage to the repo root's `usage.jsonl`.
+
+They write one row per Italian word, `Group<TAB>Italian<TAB>English`, to
+`<NN>-3.tsv` and `<NN>-3-jev.tsv` respectively - same columns, so the two can be
+diffed directly - plus a full per-word trace to `<NN>-3-words.log` /
+`<NN>-3-jev.log`. `-` in the English column means the Italian word has no
+counterpart in that fragment, which is a normal outcome rather than an error. A
+group already present in the output file with unchanged Italian words is kept
+and skipped on rerun, so an interrupted run resumes; move the file aside to
+force a fresh one.
+
+The two are not used the same way. `check_align3.py` on Terra is what sweeps the
+poem, and all 100 cantos have a `<NN>-3.tsv`. `check_align3_jev.py` is not a
+second checker for that job: it exists to test whether a future implementation
+could **skip the Terra step and run on Jev alone**. **So it is run on chosen
+cantos: always give it a `-c`, and do not run it over a whole canticle.** Three
+cantos have been scored with it so far. ALIGN3.md has the question, the evidence
+and what is still unresolved about it (thresholds, mainly).
+
+### Scoring a checked canto (`--scores`)
+
+The filled-in table is an assignment between the group's Italian and English
+words, and each end of it answers a different question. `--scores` reads an
+already-written table back and reports both, per group:
+
+- **deficit** - the fraction of Italian words marked `-`; high when the group's
+  English fragment is missing text those Italian lines need.
+- **surplus** - the fraction of the group's English words that no Italian word
+  claimed; high when the fragment carries text belonging somewhere else.
+
+A displaced fragment raises only one of the two, so neither rate alone finds
+both failures.
+
+    uv run python alignment/check_align3.py inferno --scores
+    uv run python alignment/check_align3_jev.py inferno -c 31 --scores
+
+This makes no LLM call and writes no file - the table it reads is left untouched
+and nothing new lands on disk - so it is safe to run over the whole poem. The
+scores go to stdout as a single TSV (`Canticle`, `Canto`, `Group`, `Start`,
+`End`, `ItalianWords`, `EnglishWords`, `Deficit`, `Surplus`, `SurplusWords`),
+while the closing summary and any errors go to stderr:
+
+    uv run python alignment/check_align3.py inferno --scores > scores.tsv
+
+`SurplusWords` lists the unclaimed English in the fragment's own order, which is
+usually the displaced text verbatim. Over the full 100-canto run this flags 74
+groups in 31 cantos.
+
+Either script's table scores the same way, because surplus comes from the group's
+English fragment minus what the table claimed rather than from the table alone.
+`check_align3_jev.py --scores` therefore calls the same code on `<NN>-3-jev.tsv`,
+and needs no API key - but only for cantos Jev has actually been run on, which is
+a handful by design, so give it a `-c`. Jev also reads both rates lower than
+Terra does, so the thresholds - percentiles of Terra's output - are less
+sensitive on its table; see ALIGN3.md.
+
+See [ALIGN3.md](ALIGN3.md) for the method, what `-` means in each script, the
+whole-poem measurements behind the thresholds, and why this checks stage 2 only
+and not stage 3.
+
 ## Requirements
 
 - Python 3.13+ (see `pyproject.toml`)
@@ -202,6 +295,7 @@ blank row.
 - `llm7shi` (model access and progress display)
 - An LLM backend: local (Ollama) or cloud (Gemini, OpenAI-compatible) with
   the relevant API key set
+- `typesafe-sdk` and a `TYPESAFE_API_KEY`, for `check_align3_jev.py` only
 
 ## Troubleshooting
 
