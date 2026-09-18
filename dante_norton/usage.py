@@ -46,6 +46,14 @@ def _locked(path: Path, mode: str) -> Iterator[IO[str]]:
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
+def format_usage_line(model: str, usage: Usage) -> str:
+    """モデル名とUsageを`model|input:N|output:N|...`形式の1行に整形する（3桁区切り付き）。"""
+    parts = [model]
+    for key, value in usage.to_dict().items():
+        parts.append(f"{key.removesuffix('_tokens')}:{value:,}")
+    return "|".join(parts)
+
+
 def today() -> str:
     """今日の日付をUTCで`YYYY/MM/DD`形式で返す。"""
     return datetime.now(timezone.utc).strftime("%Y/%m/%d")
@@ -155,20 +163,26 @@ def main(argv: list[str] | None = None) -> int:
         if date not in totals:
             print(f"{date}の記録がありません")
             return 1
-        print(date)
+        print(f"# {date}")
         for model, usage in totals[date].items():
-            print(f"  {model} {usage.to_dict()}")
+            print(format_usage_line(model, usage))
         return 0
 
     model_totals: dict[str, Usage] = {}
+    sections: list[str] = []
     for date, by_model in totals.items():
-        print(date)
+        lines = [f"# {date}"]
         for model, usage in by_model.items():
-            print(f"  {model} {usage.to_dict()}")
+            lines.append(format_usage_line(model, usage))
             model_totals[model] = usage if model not in model_totals else model_totals[model] + usage
-    print("=" * 10)
+        sections.append("\n".join(lines))
+
+    total_lines = ["===== Total ====="]
     for model, usage in model_totals.items():
-        print(f"{model} {usage.to_dict()}")
+        total_lines.append(format_usage_line(model, usage))
+    sections.append("\n".join(total_lines))
+
+    print("\n\n".join(sections))
     return 0
 
 
