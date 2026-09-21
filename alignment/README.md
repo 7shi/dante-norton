@@ -228,7 +228,9 @@ finished table into two per-group rates, without calling an LLM at all (see
 correspondence table; [check_align3_jev.py](check_align3_jev.py) asks TypeSafe
 System One (Jev) typed Choice questions instead, and needs `TYPESAFE_API_KEY`.
 Both take the same `-c` / `--block-size` / `--test` options as `align.py`, and
-both append per-canto token usage to the repo root's `usage.jsonl`.
+both append per-canto token usage to the shared, account-level `usage.jsonl`
+(`~/.local/state/llm7shi/usage.jsonl` by default; see llm7shi's
+`usage.find_usage_file`).
 
 They write one row per Italian word, `Group<TAB>Italian<TAB>English`, to
 `<NN>-3.tsv` and `<NN>-3-jev.tsv` respectively - same columns, so the two can be

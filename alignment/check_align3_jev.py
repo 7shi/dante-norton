@@ -16,12 +16,12 @@ present in an existing `<NN>-3-jev.tsv` (Italian words unchanged) is kept as-is
 and skipped, so a rerun after an interrupted or partial run only fills in what's
 missing; delete the file (or edit out a group's rows) to force a recheck.
 
-Token usage is appended to the repo root's `usage.jsonl` once per canto right
-after that canto finishes (see llm7shi.usage), not accumulated across cantos -
-the run's final on-screen total is a display-only sum of those already-recorded
-per-canto entries, so it is never written again itself. The log additionally
-carries each request's own input tokens, a breakdown usage.jsonl's per-canto
-records cannot reconstruct.
+Token usage is appended to the shared account-level usage.jsonl (see
+llm7shi.usage.find_usage_file) once per canto right after that canto finishes,
+not accumulated across cantos - the run's final on-screen total is a
+display-only sum of those already-recorded per-canto entries, so it is never
+written again itself. The log additionally carries each request's own input
+tokens, a breakdown usage.jsonl's per-canto records cannot reconstruct.
 
 Requires a TypeSafe API key in `TYPESAFE_API_KEY`.
 
@@ -59,10 +59,10 @@ import check_align3
 import dante_corpus
 from dante_corpus import tokenize, has_alpha
 from llm7shi.statusline import StatusLine
-from llm7shi.usage import Usage, append_usage, format_usage_line
+from llm7shi.usage import Usage, append_usage, find_usage_file, format_usage_line, print_today_totals
 from typesafe_sdk import Choice, TypeSafeClient
 
-USAGE_PATH = REPO_ROOT / "usage.jsonl"
+USAGE_PATH = find_usage_file()
 
 CANTICLES = ["inferno", "purgatorio", "paradiso"]
 
@@ -398,9 +398,10 @@ def check_canto(client: TypeSafeClient, canticle: str, canto: int, args: argpars
     Run the word-correspondence check for one canto's confirmed align3
     (`<NN>-3.txt`) groups, writing `<NN>-3-jev.tsv`. `n_cantos` feeds the status
     bar's label (`{canticle} {canto}/{n_cantos}`), mirroring align.align_canto.
-    This canto's summed Usage is appended to usage.jsonl before returning (once
-    per canto, not accumulated across cantos) and also returned, for the caller's
-    own display-only running total (None if no call succeeded).
+    This canto's summed Usage is appended to the shared usage.jsonl before
+    returning (once per canto, not accumulated across cantos) and also
+    returned, for the caller's own display-only running total (None if no
+    call succeeded).
     """
     out_dir = ALIGNMENT_DIR / canticle
     ranges_path = out_dir / f"{canto:02d}-ranges.tsv"
@@ -529,8 +530,8 @@ def main():
 
     if usages:
         total_usage = sum(usages)
-        ui.log(f"--- Total Usage ---")
-        ui.log(f"{total_usage}")
+        print(f"--- Total Usage ---\n{total_usage}\n")
+        print_today_totals(USAGE_PATH)
 
 
 if __name__ == '__main__':

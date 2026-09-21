@@ -7,7 +7,7 @@ repository = "https://github.com/7shi/dante-norton"
 requires-python = ">=3.13"
 dependencies = [
     "dante-corpus",
-    "llm7shi>=0.19.1",
+    "llm7shi>=0.21.0",
     "typesafe-sdk>=0.6.0",
 ]
 

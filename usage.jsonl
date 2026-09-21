@@ -1,3 +1,0 @@
-{"timestamp": "2026-09-17T00:00:00+00:00", "model": "openai:gpt-5.6-terra", "input_tokens": 746598, "output_tokens": 968833, "reasoning_tokens": 638732, "cached_tokens": 0, "total_tokens": 1715431}
-{"timestamp": "2026-09-18T00:00:00+00:00", "model": "openai:gpt-5.6-terra", "input_tokens": 825417, "output_tokens": 1085309, "reasoning_tokens": 720725, "cached_tokens": 0, "total_tokens": 1910726}
-{"timestamp": "2026-09-18T00:00:00+00:00", "model": "jev-latest", "input_tokens": 3750751, "output_tokens": 1971192, "total_tokens": 5721943}

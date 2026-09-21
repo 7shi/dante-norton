@@ -16,10 +16,11 @@ align.py's own output convention. A group already present in an existing
 after an interrupted or partial run only fills in what's missing; delete the
 file (or edit out a group's rows) to force it to be rechecked.
 
-Token usage is appended to the repo root's `usage.jsonl` once per canto right
-after that canto finishes (see llm7shi.usage), not accumulated across
-cantos - the run's final on-screen total is a display-only sum of those
-already-recorded per-canto entries, so it is never written again itself.
+Token usage is appended to the shared account-level usage.jsonl (see
+llm7shi.usage.find_usage_file) once per canto right after that canto finishes,
+not accumulated across cantos - the run's final on-screen total is a
+display-only sum of those already-recorded per-canto entries, so it is never
+written again itself.
 
     uv run python alignment/check_align3.py inferno -c 1 -m openai:gpt-5.6-terra
 
@@ -71,9 +72,9 @@ import dante_corpus
 from dante_corpus import tokenize, has_alpha
 from llm7shi import Client
 from llm7shi.statusline import StatusLine
-from llm7shi.usage import append_usage
+from llm7shi.usage import append_usage, find_usage_file, print_today_totals
 
-USAGE_PATH = REPO_ROOT / "usage.jsonl"
+USAGE_PATH = find_usage_file()
 
 CANTICLES = ["inferno", "purgatorio", "paradiso"]
 
@@ -428,8 +429,8 @@ def check_canto(canticle: str, canto: int, args: argparse.Namespace, n_cantos: i
     Run the word-correspondence check for one canto's confirmed align3
     (`<NN>-3.txt`) groups, writing `<NN>-3.tsv`. `n_cantos` feeds the status
     bar's label (`{canticle} {canto}/{n_cantos}`), mirroring
-    align.align_canto. This canto's summed Usage is appended to usage.jsonl
-    before returning (once per canto, not accumulated across cantos) and
+    align.align_canto. This canto's summed Usage is appended to the shared
+    usage.jsonl before returning (once per canto, not accumulated across cantos) and
     also returned, for the caller's own display-only running total (None if
     no LLM call succeeded).
     """
@@ -557,8 +558,8 @@ def main():
 
     if usages:
         total_usage = sum(usages)
-        ui.log(f"--- Total Usage ---")
-        ui.log(f"{total_usage}")
+        print(f"--- Total Usage ---\n{total_usage}\n")
+        print_today_totals(USAGE_PATH)
 
 
 if __name__ == '__main__':
