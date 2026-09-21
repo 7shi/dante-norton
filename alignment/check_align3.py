@@ -20,7 +20,8 @@ Token usage is appended to the shared account-level usage.jsonl (see
 llm7shi.usage.find_usage_file) once per canto right after that canto finishes,
 not accumulated across cantos - the run's final on-screen total is a
 display-only sum of those already-recorded per-canto entries, so it is never
-written again itself.
+written again itself. Recording only happens for an `openai:`/`gpt-` model or
+with `--save-usage`; otherwise USAGE_PATH stays unset and nothing is written.
 
     uv run python alignment/check_align3.py inferno -c 1 -m openai:gpt-5.6-terra
 
@@ -74,7 +75,8 @@ from llm7shi import Client
 from llm7shi.statusline import StatusLine
 from llm7shi.usage import append_usage, find_usage_file, print_today_totals
 
-USAGE_PATH = find_usage_file()
+# 出力する場合はパスを入れる
+USAGE_PATH = None
 
 CANTICLES = ["inferno", "purgatorio", "paradiso"]
 
@@ -509,14 +511,17 @@ def check_canto(canticle: str, canto: int, args: argparse.Namespace, n_cantos: i
         suffix = f" ({kept} kept from disk)" if kept else ""
         notify(ui, f"✓ {label}: {len(results)}/{len(groups)} group(s) checked{suffix}")
 
+        # inside the log-file block so the total lands in the log next to the
+        # per-group lines it sums
+        canto_usage = sum(usages) if usages else None
+        if canto_usage:
+            notify(ui, f"✓ Usage: {canto_usage}")
+            if USAGE_PATH is not None:
+                append_usage(canto_usage, args.model, USAGE_PATH)
+                notify(ui, f"  -> {USAGE_PATH}")
+
     ui.log(f"✓ Words: {words_path}")
     ui.log(f"✓ Log: {log_path}")
-
-    if not usages:
-        return None
-    canto_usage = sum(usages)
-    append_usage(canto_usage, args.model, USAGE_PATH)
-    ui.log(f"✓ Usage: {canto_usage} -> {USAGE_PATH}")
     return canto_usage
 
 
@@ -538,7 +543,13 @@ def main():
                         help="Score an already-written <NN>-3.tsv instead of calling the LLM: "
                              "report each group's deficit and surplus rate to "
                              "stdout and flag the outliers")
+    parser.add_argument("--save-usage", action="store_true",
+                        help="モデル名によらず使用量を記録する")
     args = parser.parse_args()
+
+    global USAGE_PATH
+    if args.model.startswith("openai:") or args.model.startswith("gpt-") or args.save_usage:
+        USAGE_PATH = find_usage_file()
 
     if err := dante_corpus.api.check_canto_spec([args.canticle], args.canto):
         parser.error(err)
@@ -559,7 +570,8 @@ def main():
     if usages:
         total_usage = sum(usages)
         print(f"--- Total Usage ---\n{total_usage}\n")
-        print_today_totals(USAGE_PATH)
+        if USAGE_PATH is not None:
+            print_today_totals(USAGE_PATH)
 
 
 if __name__ == '__main__':

@@ -62,7 +62,8 @@ from llm7shi.statusline import StatusLine
 from llm7shi.usage import Usage, append_usage, find_usage_file, format_usage_line, print_today_totals
 from typesafe_sdk import Choice, TypeSafeClient
 
-USAGE_PATH = find_usage_file()
+# 出力する場合はパスを入れる
+USAGE_PATH = None
 
 CANTICLES = ["inferno", "purgatorio", "paradiso"]
 
@@ -480,8 +481,10 @@ def check_canto(client: TypeSafeClient, canticle: str, canto: int, args: argpars
         # per-request lines it sums
         canto_usage = sum(usages) if usages else None
         if canto_usage:
-            append_usage(canto_usage, args.model, USAGE_PATH)
-            notify(ui, f"✓ Usage: {format_usage_line(args.model, canto_usage)} -> {USAGE_PATH}")
+            notify(ui, f"✓ Usage: {format_usage_line(args.model, canto_usage)}")
+            if USAGE_PATH is not None:
+                append_usage(canto_usage, args.model, USAGE_PATH)
+                notify(ui, f"  -> {USAGE_PATH}")
 
     ui.log(f"✓ Words: {words_path}")
     ui.log(f"✓ Log: {log_path}")
@@ -511,6 +514,9 @@ def main():
                              "to stdout and flag the outliers")
     args = parser.parse_args()
 
+    global USAGE_PATH
+    USAGE_PATH = find_usage_file()
+
     if err := dante_corpus.api.check_canto_spec([args.canticle], args.canto):
         parser.error(err)
 
@@ -531,7 +537,8 @@ def main():
     if usages:
         total_usage = sum(usages)
         print(f"--- Total Usage ---\n{total_usage}\n")
-        print_today_totals(USAGE_PATH)
+        if USAGE_PATH is not None:
+            print_today_totals(USAGE_PATH)
 
 
 if __name__ == '__main__':
