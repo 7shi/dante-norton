@@ -536,8 +536,9 @@ def main():
 
     if usages:
         total_usage = sum(usages)
-        print(f"--- Total Usage ---\n{total_usage}\n")
+        print(f"--- Total Usage ---\n{total_usage}")
         if USAGE_PATH is not None:
+            print()
             print_today_totals(USAGE_PATH)
 
 
