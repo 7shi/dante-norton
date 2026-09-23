@@ -572,7 +572,7 @@ def main():
         print(f"--- Total Usage ---\n{total_usage}")
         if USAGE_PATH is not None:
             print()
-            print_today_totals(USAGE_PATH)
+            print_today_totals(USAGE_PATH, models=[args.model])
 
 
 if __name__ == '__main__':
