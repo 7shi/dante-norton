@@ -16,12 +16,13 @@ align.py's own output convention. A group already present in an existing
 after an interrupted or partial run only fills in what's missing; delete the
 file (or edit out a group's rows) to force it to be rechecked.
 
-Token usage is appended to the shared account-level usage.jsonl (see
-llm7shi.usage.find_usage_file) once per canto right after that canto finishes,
-not accumulated across cantos - the run's final on-screen total is a
-display-only sum of those already-recorded per-canto entries, so it is never
-written again itself. Recording only happens for an `openai:`/`gpt-` model or
-with `--save-usage`; otherwise USAGE_PATH stays unset and nothing is written.
+All LLM calls go through one Client, whose `usages` also counts the attempts
+this script rejects and Client's own quality retries. Their sum is appended to
+the shared account-level usage.jsonl (see llm7shi.usage.find_usage_file) once
+per run, in a `finally` so an interrupted run still records what it consumed;
+the run's total and today's totals are printed only on normal completion.
+Recording only happens for an `openai:`/`gpt-` model or with `--save-usage`;
+otherwise USAGE_PATH stays unset and nothing is written.
 
     uv run python alignment/check_align3.py inferno -c 1 -m openai:gpt-5.6-terra
 
@@ -75,7 +76,7 @@ from llm7shi import Client
 from llm7shi.statusline import StatusLine
 from llm7shi.usage import append_usage, find_usage_file, print_today_totals
 
-# 出力する場合はパスを入れる
+# Set to a path to record usage; None means "don't record"
 USAGE_PATH = None
 
 CANTICLES = ["inferno", "purgatorio", "paradiso"]
@@ -190,19 +191,18 @@ def parse_word_table(text: str, words: List[str]) -> List[WordRow] | None:
     return rows
 
 
-def check_group(args: argparse.Namespace, ui: StatusLine, italian_text: str,
-                english_text: str) -> Tuple[List[WordRow] | None, object]:
+def check_group(client: Client, ui: StatusLine, italian_text: str,
+                english_text: str) -> List[WordRow] | None:
     """
     Ask the LLM to fill in the word-correspondence table for one group.
-    Retries on parse/validation failure. Returns (None, None) if no attempt
-    validated after MAX_ATTEMPTS tries.
+    Retries on parse/validation failure. Returns None if no attempt
+    validated after MAX_ATTEMPTS tries. Every attempt's usage, rejected ones
+    included, is left in `client.usages`.
     """
     words = italian_words(italian_text)
     prompt = build_prompt(italian_text, english_text, words)
 
     for attempt in range(MAX_ATTEMPTS):
-        client = Client(model=args.model, include_thoughts=args.think, temperature=args.temperature,
-                        file=ui.stream, show_params=False)
         started = time.monotonic()
         ui.log("")
         try:
@@ -223,10 +223,10 @@ def check_group(args: argparse.Namespace, ui: StatusLine, italian_text: str,
             continue
 
         notify(ui, f"    ✓ attempt {attempt + 1}/{MAX_ATTEMPTS}: accepted ({elapsed:.1f}s)")
-        return rows, response.usage
+        return rows
 
     notify(ui, f"    ✗ failed after {MAX_ATTEMPTS} attempts", error=True)
-    return None, None
+    return None
 
 
 # ============================================================================
@@ -425,16 +425,14 @@ def load_existing_tsv(path: Path) -> Dict[int, List[WordRow]]:
     return existing
 
 
-def check_canto(canticle: str, canto: int, args: argparse.Namespace, n_cantos: int,
-                ui: StatusLine) -> object | None:
+def check_canto(client: Client, canticle: str, canto: int, args: argparse.Namespace,
+                n_cantos: int, ui: StatusLine) -> None:
     """
     Run the word-correspondence check for one canto's confirmed align3
     (`<NN>-3.txt`) groups, writing `<NN>-3.tsv`. `n_cantos` feeds the status
     bar's label (`{canticle} {canto}/{n_cantos}`), mirroring
-    align.align_canto. This canto's summed Usage is appended to the shared
-    usage.jsonl before returning (once per canto, not accumulated across cantos) and
-    also returned, for the caller's own display-only running total (None if
-    no LLM call succeeded).
+    align.align_canto. Usage accumulates in `client.usages`; this canto's
+    share is only shown (and logged), recording is left to main().
     """
     out_dir = ALIGNMENT_DIR / canticle
     ranges_path = out_dir / f"{canto:02d}-ranges.tsv"
@@ -475,7 +473,7 @@ def check_canto(canticle: str, canto: int, args: argparse.Namespace, n_cantos: i
         # as-is and skipped, so a rerun only fills in what's missing.
         existing = load_existing_tsv(words_path)
 
-        usages = []
+        first_usage = len(client.usages)
         kept = 0
         results: List[Tuple[int, List[WordRow]]] = []
         with ui.progress(len(italian_lines), label=label, dual=True) as prog:
@@ -500,11 +498,9 @@ def check_canto(canticle: str, canto: int, args: argparse.Namespace, n_cantos: i
                 if not english_text.strip():
                     log_print("  blank align3 row - skipped")
                     continue
-                rows, usage = check_group(args, ui, italian_text, english_text)
+                rows = check_group(client, ui, italian_text, english_text)
                 if rows is None:
                     continue
-                if usage:
-                    usages.append(usage)
                 results.append((index, rows))
                 write_tsv(results, words_path)
 
@@ -513,16 +509,12 @@ def check_canto(canticle: str, canto: int, args: argparse.Namespace, n_cantos: i
 
         # inside the log-file block so the total lands in the log next to the
         # per-group lines it sums
-        canto_usage = sum(usages) if usages else None
-        if canto_usage:
-            notify(ui, f"✓ Usage: {canto_usage}")
-            if USAGE_PATH is not None:
-                append_usage(canto_usage, args.model, USAGE_PATH)
-                notify(ui, f"  -> {USAGE_PATH}")
+        canto_usages = client.usages[first_usage:]
+        if canto_usages:
+            notify(ui, f"✓ Usage: {sum(canto_usages)}")
 
     ui.log(f"✓ Words: {words_path}")
     ui.log(f"✓ Log: {log_path}")
-    return canto_usage
 
 
 def main():
@@ -548,7 +540,7 @@ def main():
     args = parser.parse_args()
 
     global USAGE_PATH
-    if args.model.startswith("openai:") or args.model.startswith("gpt-") or args.save_usage:
+    if args.model.startswith(("openai:", "gpt-")) or args.save_usage:
         USAGE_PATH = find_usage_file()
 
     if err := dante_corpus.api.check_canto_spec([args.canticle], args.canto):
@@ -561,15 +553,21 @@ def main():
     ui = StatusLine()
     n_cantos = len(dante_corpus.api.cantos(args.canticle))
 
-    usages = []
-    for canto in dante_corpus.api.select_cantos(args.canticle, args.canto):
-        usage = check_canto(args.canticle, canto, args, n_cantos, ui)
-        if usage:
-            usages.append(usage)
+    # one client for the whole run, so sum(client.usages) covers every attempt
+    client = Client(model=args.model, include_thoughts=args.think, temperature=args.temperature,
+                    file=ui.stream, show_params=False, keep_history=False, show_usage=True)
 
-    if usages:
-        total_usage = sum(usages)
-        print(f"--- Total Usage ---\n{total_usage}")
+    try:
+        for canto in dante_corpus.api.select_cantos(args.canticle, args.canto):
+            check_canto(client, args.canticle, canto, args, n_cantos, ui)
+    finally:
+        # Record silently so an interrupted run still logs what it consumed;
+        # the report below is printed only on normal completion.
+        if client.usages and USAGE_PATH is not None:
+            append_usage(sum(client.usages), args.model, USAGE_PATH)
+
+    if client.usages:
+        print(f"\n--- Total Usage ---\n{sum(client.usages)}")
         if USAGE_PATH is not None:
             print()
             print_today_totals(USAGE_PATH, models=[args.model])

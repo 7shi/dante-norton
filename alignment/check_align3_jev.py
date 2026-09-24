@@ -16,12 +16,13 @@ present in an existing `<NN>-3-jev.tsv` (Italian words unchanged) is kept as-is
 and skipped, so a rerun after an interrupted or partial run only fills in what's
 missing; delete the file (or edit out a group's rows) to force a recheck.
 
-Token usage is appended to the shared account-level usage.jsonl (see
-llm7shi.usage.find_usage_file) once per canto right after that canto finishes,
-not accumulated across cantos - the run's final on-screen total is a
-display-only sum of those already-recorded per-canto entries, so it is never
-written again itself. The log additionally carries each request's own input
-tokens, a breakdown usage.jsonl's per-canto records cannot reconstruct.
+Every request's usage is collected in USAGES (TypeSafeClient keeps no
+`usages` list of its own, unlike llm7shi's Client). Their sum is appended to the
+shared account-level usage.jsonl (see llm7shi.usage.find_usage_file) once per
+run, in a `finally` so an interrupted run still records what it consumed; the
+run's total and today's totals are printed only on normal completion. The log
+additionally carries each request's own input tokens, a breakdown usage.jsonl's
+per-run record cannot reconstruct.
 
 Requires a TypeSafe API key in `TYPESAFE_API_KEY`.
 
@@ -62,8 +63,12 @@ from llm7shi.statusline import StatusLine
 from llm7shi.usage import Usage, append_usage, find_usage_file, format_usage_line, print_today_totals
 from typesafe_sdk import Choice, TypeSafeClient
 
-# 出力する場合はパスを入れる
+# Set to a path to record usage; None means "don't record"
 USAGE_PATH = None
+
+# Every successful System One request's usage in this run, standing in for
+# llm7shi Client.usages; summed and recorded once by main()
+USAGES: List[Usage] = []
 
 CANTICLES = ["inferno", "purgatorio", "paradiso"]
 
@@ -296,9 +301,9 @@ def attach_reverse(response, verdicts: List[WordVerdict], en_words: List[str],
 
 
 def ask(client: TypeSafeClient, args: argparse.Namespace, ui: StatusLine, kind: str,
-        state: dict, questions: dict) -> Tuple[object | None, Usage | None]:
-    """One System One request, retried on failure. Returns (None, None) if no
-    attempt succeeded after MAX_ATTEMPTS tries."""
+        state: dict, questions: dict) -> object | None:
+    """One System One request, retried on failure, its usage added to USAGES.
+    Returns None if no attempt succeeded after MAX_ATTEMPTS tries."""
     for attempt in range(MAX_ATTEMPTS):
         started = time.monotonic()
         try:
@@ -310,54 +315,53 @@ def ask(client: TypeSafeClient, args: argparse.Namespace, ui: StatusLine, kind: 
         elapsed = time.monotonic() - started
         usage = Usage(raw={"input_tokens": response.usage.input_tokens,
                            "output_tokens": response.usage.output_tokens})
+        USAGES.append(usage)
         notify(ui, f"    ✓ {kind} attempt {attempt + 1}/{MAX_ATTEMPTS}: "
                    f"{len(questions)} question(s) answered ({elapsed:.1f}s, "
                    f"input: {usage.input_tokens:,})")
-        return response, usage
+        return response
 
     notify(ui, f"    ✗ {kind} failed after {MAX_ATTEMPTS} attempts", error=True)
-    return None, None
+    return None
 
 
 def check_group(client: TypeSafeClient, args: argparse.Namespace, ui: StatusLine,
-                italian_text: str, english_text: str) -> Tuple[List[WordVerdict] | None, Usage | None]:
+                italian_text: str, english_text: str) -> List[WordVerdict] | None:
     """
     Ask System One for one group's word correspondences: the forward pass, then
     - unless --no-reverse - the reverse pass over what it left unclaimed.
-    Returns (None, None) if the forward pass never succeeded; a failed reverse
+    Returns None if the forward pass never succeeded; a failed reverse
     pass keeps the forward result rather than discarding the group.
     """
     it_words = italian_words(italian_text)
     en_words = english_words(english_text)
     if not it_words or not en_words:
         notify(ui, f"    ✗ group has no Italian or no English word tokens", error=True)
-        return None, None
+        return None
 
-    response, usage = ask(client, args, ui, "forward",
+    response = ask(client, args, ui, "forward",
                           build_state(italian_text, english_text, FORWARD_GUIDANCE),
                           build_questions(it_words, en_words))
     if response is None:
-        return None, None
+        return None
     verdicts = read_answers(response, it_words, en_words)
     for v in verdicts:
         dist = " ".join(f"{lbl}={w}:{p:.2f}" for lbl, w, p in v.dist)
         log_print(f"      {v.italian:<20} -> {v.best:<20} p={v.prob:.2f} "
                   f"none={v.none_prob:.2f} [{v.status:<9}] {dist}")
 
-    usages = [usage]
     unclaimed = [] if args.no_reverse else unclaimed_english(verdicts, en_words)
     if unclaimed:
         log_print(f"    {len(unclaimed)} unclaimed English word(s): "
                   f"{' '.join(en_words[j] for j in unclaimed)}")
-        back, back_usage = ask(client, args, ui, "reverse",
+        back = ask(client, args, ui, "reverse",
                                build_state(italian_text, english_text, REVERSE_GUIDANCE),
                                build_reverse_questions(it_words, en_words, unclaimed))
         if back is not None:
             attached = attach_reverse(back, verdicts, en_words, unclaimed)
             log_print(f"    {attached}/{len(unclaimed)} attached")
-            usages.append(back_usage)
 
-    return verdicts, sum(usages)
+    return verdicts
 
 
 # ============================================================================
@@ -394,15 +398,13 @@ def load_existing_tsv(path: Path) -> Dict[int, List[WordRow]]:
 
 
 def check_canto(client: TypeSafeClient, canticle: str, canto: int, args: argparse.Namespace,
-                n_cantos: int, ui: StatusLine) -> Usage | None:
+                n_cantos: int, ui: StatusLine) -> None:
     """
     Run the word-correspondence check for one canto's confirmed align3
     (`<NN>-3.txt`) groups, writing `<NN>-3-jev.tsv`. `n_cantos` feeds the status
     bar's label (`{canticle} {canto}/{n_cantos}`), mirroring align.align_canto.
-    This canto's summed Usage is appended to the shared usage.jsonl before
-    returning (once per canto, not accumulated across cantos) and also
-    returned, for the caller's own display-only running total (None if no
-    call succeeded).
+    Usage accumulates in USAGES; this canto's share is only shown (and
+    logged), recording is left to main().
     """
     out_dir = ALIGNMENT_DIR / canticle
     ranges_path = out_dir / f"{canto:02d}-ranges.tsv"
@@ -441,7 +443,7 @@ def check_canto(client: TypeSafeClient, canticle: str, canto: int, args: argpars
 
         existing = load_existing_tsv(words_path)
 
-        usages = []
+        first_usage = len(USAGES)
         kept = 0
         results: List[Tuple[int, List[WordRow]]] = []
         with ui.progress(len(italian_lines), label=label, dual=True) as prog:
@@ -466,11 +468,9 @@ def check_canto(client: TypeSafeClient, canticle: str, canto: int, args: argpars
                 if not english_text.strip():
                     log_print("  blank align3 row - skipped")
                     continue
-                verdicts, usage = check_group(client, args, ui, italian_text, english_text)
+                verdicts = check_group(client, args, ui, italian_text, english_text)
                 if verdicts is None:
                     continue
-                if usage:
-                    usages.append(usage)
                 results.append((index, [WordRow(v.italian, v.english) for v in verdicts]))
                 write_tsv(results, words_path)
 
@@ -479,16 +479,12 @@ def check_canto(client: TypeSafeClient, canticle: str, canto: int, args: argpars
 
         # inside the log-file block so the total lands in the log next to the
         # per-request lines it sums
-        canto_usage = sum(usages) if usages else None
-        if canto_usage:
-            notify(ui, f"✓ Usage: {format_usage_line(args.model, canto_usage)}")
-            if USAGE_PATH is not None:
-                append_usage(canto_usage, args.model, USAGE_PATH)
-                notify(ui, f"  -> {USAGE_PATH}")
+        canto_usages = USAGES[first_usage:]
+        if canto_usages:
+            notify(ui, f"✓ Usage: {format_usage_line(args.model, sum(canto_usages))}")
 
     ui.log(f"✓ Words: {words_path}")
     ui.log(f"✓ Log: {log_path}")
-    return canto_usage
 
 
 def main():
@@ -527,16 +523,18 @@ def main():
 
     ui = StatusLine()
     n_cantos = len(dante_corpus.api.cantos(args.canticle))
-    usages = []
-    with TypeSafeClient(timeout=args.timeout) as client:
-        for canto in dante_corpus.api.select_cantos(args.canticle, args.canto):
-            usage = check_canto(client, args.canticle, canto, args, n_cantos, ui)
-            if usage:
-                usages.append(usage)
+    try:
+        with TypeSafeClient(timeout=args.timeout) as client:
+            for canto in dante_corpus.api.select_cantos(args.canticle, args.canto):
+                check_canto(client, args.canticle, canto, args, n_cantos, ui)
+    finally:
+        # Record silently so an interrupted run still logs what it consumed;
+        # the report below is printed only on normal completion.
+        if USAGES and USAGE_PATH is not None:
+            append_usage(sum(USAGES), args.model, USAGE_PATH)
 
-    if usages:
-        total_usage = sum(usages)
-        print(f"--- Total Usage ---\n{total_usage}")
+    if USAGES:
+        print(f"\n--- Total Usage ---\n{sum(USAGES)}")
         if USAGE_PATH is not None:
             print()
             print_today_totals(USAGE_PATH, models=[args.model])
