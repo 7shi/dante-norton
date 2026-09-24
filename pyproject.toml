@@ -7,7 +7,7 @@ repository = "https://github.com/7shi/dante-norton"
 requires-python = ">=3.13"
 dependencies = [
     "dante-corpus",
-    "llm7shi>=0.21.1",
+    "llm7shi>=0.22.0",
     "typesafe-sdk>=0.6.0",
 ]
 
@@ -26,6 +26,3 @@ packages = ["dante_norton"]
 include = [
     "dante_norton",
 ]
-
-[project.scripts]
-usage = "llm7shi.usage:main"
